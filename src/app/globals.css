@@ -1,0 +1,70 @@
+@import 'tailwindcss';
+
+/* Calm, warm, paper-like palette. One accent (deep green), everything else neutral. */
+@theme {
+  --color-paper: #f6f4ef;
+  --color-card: #ffffff;
+  --color-ink: #1d1c1a;
+  --color-ink-2: #5d5a54;
+  --color-ink-3: #8f8b83;
+  --color-line: #e6e2da;
+  --color-line-2: #d6d1c6;
+  --color-sunk: #efece5;
+  --color-brand: #1f4d3a;
+  --color-brand-2: #2e6b52;
+  --color-brand-soft: #e4eee8;
+  --color-warn: #9a5b13;
+  --color-warn-soft: #f7ecdc;
+  --color-risk: #a33a2c;
+  --color-risk-soft: #f6e3df;
+  --font-sans: var(--font-body), ui-sans-serif, system-ui, sans-serif;
+  --radius-card: 18px;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-feature-settings: 'ss01', 'cv11';
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+@utility card {
+  @apply rounded-[var(--radius-card)] border border-line bg-card;
+}
+@utility btn {
+  @apply inline-flex h-10 items-center justify-center gap-2 rounded-full px-5 text-[15px] font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+}
+@utility btn-primary {
+  @apply inline-flex h-10 items-center justify-center gap-2 rounded-full px-5 text-[15px] font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+  @apply bg-ink text-paper hover:bg-black;
+}
+@utility btn-brand {
+  @apply inline-flex h-10 items-center justify-center gap-2 rounded-full px-5 text-[15px] font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+  @apply bg-brand text-white hover:bg-brand-2;
+}
+@utility btn-quiet {
+  @apply inline-flex h-10 items-center justify-center gap-2 rounded-full px-5 text-[15px] font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+  @apply border border-line-2 bg-card text-ink hover:bg-sunk;
+}
+@utility btn-sm {
+  @apply h-8 px-3.5 text-sm;
+}
+@utility input {
+  @apply h-11 w-full rounded-xl border border-line-2 bg-card px-3.5 text-[15px] text-ink outline-none transition placeholder:text-ink-3 focus:border-ink;
+}
+@utility label {
+  @apply mb-1.5 block text-sm font-medium text-ink-2;
+}
+@utility chip {
+  @apply inline-flex h-9 cursor-pointer items-center gap-2 rounded-full border border-line-2 bg-card px-3.5 text-sm text-ink transition select-none hover:border-ink-3;
+  &[data-on='true'] {
+    @apply border-ink bg-ink text-paper;
+  }
+}
+@utility eyebrow {
+  @apply text-[13px] font-medium text-ink-3;
+}

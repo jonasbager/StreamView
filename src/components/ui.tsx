@@ -1,95 +1,64 @@
-import type { ReactNode } from 'react'
-import type { Enforcement, Service } from '../lib/types'
-import { ENFORCEMENT_LABEL, ENFORCEMENT_RANK } from '../lib/types'
+import Link from 'next/link'
+import type { Enforcement } from '@/db/schema'
+import { ENFORCEMENT_DA } from '@/lib/format'
 
-export function Card({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return <div className={`rounded-2xl border border-white/8 bg-white/[0.03] ${className}`}>{children}</div>
-}
-
-const ENF_COLOR: Record<Enforcement, string> = {
-  none: 'bg-emerald-400',
-  low: 'bg-lime-400',
-  medium: 'bg-amber-400',
-  high: 'bg-orange-500',
-  strict: 'bg-rose-500',
-}
-
-const ENF_TEXT: Record<Enforcement, string> = {
-  none: 'text-emerald-300',
-  low: 'text-lime-300',
-  medium: 'text-amber-300',
-  high: 'text-orange-300',
-  strict: 'text-rose-300',
-}
-
-export function EnforcementMeter({ level, showLabel = true }: { level: Enforcement; showLabel?: boolean }) {
-  const rank = ENFORCEMENT_RANK[level]
+export function Logo({ href = '/' }: { href?: string }) {
   return (
-    <span className="inline-flex items-center gap-2" title={`Sharing enforcement: ${ENFORCEMENT_LABEL[level]}`}>
-      <span className="flex items-end gap-0.5" aria-hidden>
+    <Link href={href} className="flex items-center gap-2.5 text-[17px] font-semibold tracking-tight">
+      <svg viewBox="0 0 32 32" className="size-7" aria-hidden>
+        <rect width="32" height="32" rx="9" fill="var(--color-brand)" />
+        <rect x="8" y="17" width="4" height="7" rx="2" fill="#f6f4ef" />
+        <rect x="14" y="12" width="4" height="12" rx="2" fill="#f6f4ef" />
+        <rect x="20" y="8" width="4" height="16" rx="2" fill="#f6f4ef" />
+      </svg>
+      StreamView
+    </Link>
+  )
+}
+
+const RISK_STYLE: Record<Enforcement, string> = {
+  none: 'bg-brand-soft text-brand',
+  low: 'bg-sunk text-ink-2',
+  medium: 'bg-warn-soft text-warn',
+  high: 'bg-warn-soft text-warn',
+  strict: 'bg-risk-soft text-risk',
+}
+
+export function RiskPill({ level, label }: { level: Enforcement; label?: string }) {
+  const filled = { none: 0, low: 1, medium: 2, high: 3, strict: 4 }[level]
+  return (
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${RISK_STYLE[level]}`}>
+      <span className="flex gap-0.5" aria-hidden>
         {[1, 2, 3, 4].map((i) => (
-          <span
-            key={i}
-            className={`w-1.5 rounded-sm ${i <= rank ? ENF_COLOR[level] : 'bg-white/10'}`}
-            style={{ height: 4 + i * 3 }}
-          />
+          <span key={i} className={`h-1.5 w-1.5 rounded-full ${i <= filled ? 'bg-current' : 'bg-current opacity-20'}`} />
         ))}
       </span>
-      {showLabel && <span className={`text-xs font-medium ${ENF_TEXT[level]}`}>{ENFORCEMENT_LABEL[level]}</span>}
+      {label ?? ENFORCEMENT_DA[level]}
     </span>
   )
 }
 
-export function ServiceChip({ service, dim = false }: { service: Service; dim?: boolean }) {
+export function Mark({ name, color, size = 32 }: { name: string; color: string; size?: number }) {
+  const letters = name.replace(/[^A-Za-zÆØÅæøå0-9+ ]/g, '').split(' ').map((w) => w[0]).join('').slice(0, 2)
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full border border-white/10 px-2 py-0.5 text-xs ${dim ? 'opacity-50' : ''}`}
+      className="grid shrink-0 place-items-center rounded-[10px] font-semibold text-white"
+      style={{ width: size, height: size, background: color, fontSize: Math.round(size * 0.38) }}
+      aria-hidden
     >
-      <span className="size-2 rounded-full" style={{ background: service.color }} />
-      {service.name}
+      {letters}
     </span>
   )
 }
 
-export function ServiceLogo({ service, size = 36 }: { service: Service; size?: number }) {
-  const initials = service.name
-    .replace(/[^A-Za-z0-9+ ]/g, '')
-    .split(' ')
-    .map((w) => w[0])
-    .join('')
-    .slice(0, 2)
+const PEOPLE = ['#1f4d3a', '#8a5a2b', '#3d5a80', '#7a4b6b', '#4f6d3a', '#7d6b2f', '#2f6b6b', '#6b3d3d']
+export const personColor = (i: number) => PEOPLE[i % PEOPLE.length]
+
+export function Person({ name, color, size = 28 }: { name: string; color: string; size?: number }) {
   return (
     <span
-      className="grid shrink-0 place-items-center rounded-xl font-bold text-white shadow-inner"
-      style={{ width: size, height: size, background: service.color, fontSize: size * 0.36 }}
-    >
-      {initials}
-    </span>
-  )
-}
-
-export function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
-  return (
-    <label className="flex cursor-pointer items-center gap-3 text-sm">
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        onClick={() => onChange(!checked)}
-        className={`relative h-6 w-10 shrink-0 rounded-full transition ${checked ? 'bg-indigo-500' : 'bg-white/15'}`}
-      >
-        <span className={`absolute top-0.5 size-5 rounded-full bg-white transition-all ${checked ? 'left-[18px]' : 'left-0.5'}`} />
-      </button>
-      {label}
-    </label>
-  )
-}
-
-export function Avatar({ name, color }: { name: string; color: string }) {
-  return (
-    <span
-      className="grid size-7 shrink-0 place-items-center rounded-full text-xs font-semibold text-white"
-      style={{ background: color }}
+      className="grid shrink-0 place-items-center rounded-full font-semibold text-white ring-2 ring-card"
+      style={{ width: size, height: size, background: color, fontSize: Math.round(size * 0.42) }}
       title={name}
     >
       {name.slice(0, 1).toUpperCase()}
@@ -97,5 +66,12 @@ export function Avatar({ name, color }: { name: string; color: string }) {
   )
 }
 
-const HOUSE_COLORS = ['#6366f1', '#14b8a6', '#f59e0b', '#ec4899', '#22c55e', '#0ea5e9', '#a855f7', '#ef4444']
-export const houseColor = (index: number) => HOUSE_COLORS[index % HOUSE_COLORS.length]
+export function Stat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: 'brand' | 'muted' }) {
+  return (
+    <div>
+      <div className="eyebrow">{label}</div>
+      <div className={`num mt-1 text-3xl font-semibold tracking-tight ${tone === 'brand' ? 'text-brand' : tone === 'muted' ? 'text-ink-3' : ''}`}>{value}</div>
+      {sub && <div className="mt-1 text-sm text-ink-2">{sub}</div>}
+    </div>
+  )
+}
