@@ -15,6 +15,13 @@
       "when": 1795081986254,
       "tag": "0001_provider_last_checked",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795084138782,
+      "tag": "0002_family_settings",
+      "breakpoints": true
     }
   ]
 }

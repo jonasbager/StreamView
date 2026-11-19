@@ -24,11 +24,11 @@ export function Landing({ userId }: { userId: string | null }) {
         <section className="grid items-center gap-12 py-14 md:grid-cols-[1.1fr_1fr] md:py-24">
           <div>
             <h1 className="text-[40px] leading-[1.05] font-semibold tracking-[-0.03em] text-balance md:text-[56px]">
-              Hele familiens streaming, mobil og internet. Samlet og billigere.
+              Flest mulige tjenester for familiens budget.
             </h1>
             <p className="mt-5 max-w-lg text-lg leading-relaxed text-ink-2">
-              Inviter familien, svar på fire korte spørgsmål, og se præcis hvad I betaler i dag, og hvad I kunne betale. Byg
-              jeres egne pakker og se prisen ændre sig med det samme.
+              Fortæl hvad I har, og hvad I gerne vil have. Sæt et budget, og se hvor mange ønsker I kan få opfyldt, og hvor meget
+              mere I får ved at være lidt fleksible: reklamer, binding, et nyt mobilselskab eller at dele med familien.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
               <Link href={cta} className="btn-brand">Start gratis</Link>

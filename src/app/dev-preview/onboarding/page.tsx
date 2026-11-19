@@ -12,7 +12,7 @@ export default async function Page() {
         initial={ctx.members[0].answers}
         services={ctx.services.map((s) => ({ id: s.id, name: s.name, color: s.color, category: s.category }))}
         telcos={ctx.providers.filter((p) => p.kind === 'telco').map((p) => ({ id: p.id, name: p.name, offers: p.offers }))}
-        cheapest={{}}
+        plans={Object.fromEntries(ctx.services.map((s) => [s.id, ctx.products.filter((p) => p.includes.some((i) => i.serviceId === s.id)).map((p) => ({ id: p.id, name: p.name, price: p.price }))]))}
       />
     </main>
   )

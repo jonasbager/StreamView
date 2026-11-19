@@ -14,7 +14,8 @@ import {
   type DragStartEvent,
 } from '@dnd-kit/core'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Mark, Person, personColor, RiskPill } from '@/components/ui'
+import { BrandMark } from '@/components/BrandMark'
+import { Person, personColor, RiskPill } from '@/components/ui'
 import type { BoardPackage, ProductCategory } from '@/db/schema'
 import { answersOf, Catalog, EXTRA_SUFFIX, evaluate, KEEP_PREFIX, optimise, type Ctx, type Priced } from '@/lib/engine'
 import { CATEGORY_DA, kr } from '@/lib/format'
@@ -170,14 +171,17 @@ export function Builder({ ctx, initial, savedAt }: { ctx: Ctx; initial: BoardPac
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">Pakker</h1>
-          <p className="mt-1 text-ink-2">Træk tjenester og personer ind i pakkerne. Prisen opdateres med det samme.</p>
+          <p className="mt-1 max-w-2xl text-ink-2">
+            Her er jeres opsætning delt op i pakker: hvem betaler, hvem bruger den, og hvad der er med. Træk tjenester og personer rundt;
+            prisen og advarslerne opdateres med det samme. Hver linje viser, hvem der har ønsket den.
+          </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm text-ink-3" aria-live="polite">
             {{ saved: 'Gemt', dirty: 'Ikke gemt', saving: 'Gemmer…', error: 'Kunne ikke gemme' }[status]}
           </span>
-          <button className="btn-quiet btn-sm" onClick={() => reset('legal')}>Start fra lovligt forslag</button>
-          <button className="btn-quiet btn-sm" onClick={() => reset('bend')}>Grå zone</button>
+          <a href="/app" className="btn-quiet btn-sm">Tilbage til budget</a>
+          <button className="btn-quiet btn-sm" onClick={() => reset('legal')}>Start forfra (alle ønsker)</button>
         </div>
       </div>
 
@@ -296,14 +300,14 @@ function serviceColor(it: Priced, cat: Catalog) {
   return (sid && cat.service.get(sid)?.color) || cat.ctx.providers.find((p) => p.name === it.providerName)?.color || '#5d5a54'
 }
 
-function ProductRow({ item, cat, lifted, onAdd, onRemove }: { item: Priced; cat: Catalog; lifted?: boolean; onAdd?: () => void; onRemove?: () => void }) {
+function ProductRow({ item, cat, lifted, onAdd, onRemove, who }: { item: Priced; cat: Catalog; lifted?: boolean; onAdd?: () => void; onRemove?: () => void; who?: { text: string; warn?: boolean } }) {
   return (
     <div
       className={`group flex items-center gap-3 rounded-xl border bg-card px-3 py-2.5 ${lifted ? 'rotate-[0.6deg] border-ink shadow-xl' : 'border-line hover:border-line-2'}`}
     >
-      <Mark name={item.providerName} color={serviceColor(item, cat)} size={30} />
+      <BrandMark id={item.logoId} name={item.providerName} color={serviceColor(item, cat)} size={30} />
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[15px] font-medium">{item.providerName === item.name ? item.name : `${item.providerName} ${item.name}`}</div>
+        <div className="truncate text-[15px] font-medium">{item.name.toLowerCase().startsWith(item.providerName.toLowerCase()) ? item.name : `${item.providerName} ${item.name}`}</div>
         <div className="truncate text-xs text-ink-3">
           {CATEGORY_DA[item.category]}
           {item.attributes.ads ? ' · reklamer' : ''}
@@ -311,6 +315,7 @@ function ProductRow({ item, cat, lifted, onAdd, onRemove }: { item: Priced; cat:
           {item.extraFor ? ' · 1 person uden for hjemmet' : ''}
           {!item.verified && ' · pris ikke bekræftet'}
         </div>
+        {who && <div className={`truncate text-xs ${who.warn ? 'text-warn' : 'text-ink-2'}`}>{who.text}</div>}
       </div>
       <div className="num text-[15px] font-medium">{kr(item.monthly)}</div>
       {onAdd && (
@@ -327,14 +332,14 @@ function ProductRow({ item, cat, lifted, onAdd, onRemove }: { item: Priced; cat:
   )
 }
 
-function DraggableProduct({ uid, item, cat, onAdd, from, onRemove }: { uid: string; item: Priced; cat: Catalog; onAdd?: () => void; from?: string; onRemove?: () => void }) {
+function DraggableProduct({ uid, item, cat, onAdd, from, onRemove, who }: { uid: string; item: Priced; cat: Catalog; onAdd?: () => void; from?: string; onRemove?: () => void; who?: { text: string; warn?: boolean } }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `product:${from ?? 'catalog'}:${uid}`,
     data: { type: 'product', id: item.id, from } satisfies Drag,
   })
   return (
     <div ref={setNodeRef} {...listeners} {...attributes} className={`touch-manipulation cursor-grab active:cursor-grabbing ${isDragging ? 'opacity-30' : ''}`}>
-      <ProductRow item={item} cat={cat} onAdd={onAdd} onRemove={onRemove} />
+      <ProductRow item={item} cat={cat} onAdd={onAdd} onRemove={onRemove} who={who} />
     </div>
   )
 }
@@ -445,6 +450,7 @@ function PackageCard({
             <DraggableProduct
               key={key}
               uid={key}
+              who={whoFor(item, pkg, ctx)}
               item={item}
               cat={cat}
               from={pkg.id}
@@ -476,6 +482,21 @@ function PackageCard({
       <button onClick={onDelete} className="mt-4 self-start text-sm text-ink-3 hover:text-risk">Slet pakke</button>
     </div>
   )
+}
+
+/** Why an item is in a package: who wanted it, or who it's for. */
+function whoFor(item: Priced, pkg: BoardPackage, ctx: Ctx): { text: string; warn?: boolean } | undefined {
+  const name = (id: string) => ctx.members.find((m) => m.id === id)?.name ?? '?'
+  if (item.keep) return { text: `Beholdes af ${name(item.keep.memberId)}` }
+  if (item.category === 'mobile') return { text: 'Mobil til én person i pakken' }
+  if (item.category === 'broadband' || item.category === 'tv') return { text: 'Til hele hjemmet' }
+  const sids = item.includes.map((i) => i.serviceId)
+  const wanting = pkg.memberIds.filter((m) => {
+    const a = ctx.members.find((x) => x.id === m)?.answers
+    return a?.wants.some((w) => sids.includes(w))
+  })
+  if (!wanting.length) return { text: 'Ingen i pakken har ønsket den', warn: true }
+  return { text: `Ønsket af ${wanting.map(name).join(', ')}` }
 }
 
 function NewPackageZone({ onClick }: { onClick: () => void }) {

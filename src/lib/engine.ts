@@ -1,5 +1,6 @@
 import type {
   Answers,
+  PaidVia,
   BoardPackage,
   Enforcement,
   Household,
@@ -29,6 +30,9 @@ export interface Priced {
   id: string
   name: string
   providerName: string
+  providerId?: string
+  /** Id used for the logo: the service for streaming items, else the provider. */
+  logoId?: string
   category: ProductCategory
   monthly: number
   /** Cost in the first 12 months, incl. intro price and setup fee. */
@@ -86,7 +90,7 @@ export class Catalog {
       return {
         id, name: 'Ekstra medlem', providerName: this.provider.get(base.providerId)?.name ?? base.providerId, category: 'streaming',
         monthly: em.price, firstYear: em.price * 12, bindingMonths: 0, includes: sid ? [{ serviceId: sid, capacity: 1 }] : [],
-        attributes: {}, verified: base.verifiedAt != null, extraFor: sid,
+        attributes: {}, verified: base.verifiedAt != null, extraFor: sid, providerId: base.providerId, logoId: sid,
       }
     }
     const p = this.product.get(id)
@@ -95,6 +99,8 @@ export class Catalog {
       id,
       name: p.name,
       providerName: this.provider.get(p.providerId)?.name ?? p.providerId,
+      providerId: p.providerId,
+      logoId: p.category === 'streaming' && p.includes.length === 1 ? p.includes[0].serviceId : p.providerId,
       category: p.category,
       // Always the normal price; intro offers and free trials only count in firstYear.
       monthly: p.price,
@@ -117,9 +123,10 @@ export class Catalog {
       const pay = a.paysFor.find((x) => x.serviceId === serviceId)
       const svc = serviceId ? this.service.get(serviceId) : undefined
       if (!pay || !svc) return null
-      const monthly = pay.monthly ?? this.cheapestPrice(svc.id)
+      const other = pay.via === 'other'
+      const monthly = other ? 0 : pay.monthly ?? this.planPrice(pay.productId) ?? this.cheapestPrice(svc.id)
       return {
-        id, name: 'Nuværende abonnement', providerName: svc.name, category: 'streaming', monthly, firstYear: monthly * 12,
+        id, name: other ? 'Betales af en anden' : 'Nuværende abonnement', providerName: svc.name, logoId: svc.id, category: 'streaming', monthly, firstYear: monthly * 12,
         bindingMonths: 0, includes: [{ serviceId: svc.id, capacity: svc.capacityType === 'seats' ? 1 : 2 }], attributes: {}, verified: true,
         keep: { memberId, kind, serviceId },
       }
@@ -128,11 +135,20 @@ export class Catalog {
     if (!bill) return null
     const providerName = bill.providerId ? this.provider.get(bill.providerId)?.name ?? bill.providerId : bill.other || 'Ukendt'
     const label = kind === 'mobile' ? 'Mobil' : kind === 'broadband' ? 'Internet' : 'TV'
-    const monthly = bill.monthly ?? 0
+    const monthly = bill.monthly ?? estimateBill(this, kind, bill.providerId)
+    // Streaming included in this bill (e.g. HBO Max with the mobile plan).
+    const homeMembers = kind === 'mobile' ? [m] : this.ctx.members.filter((x) => x.householdId === m.householdId)
+    const included = [...new Set(homeMembers.flatMap((x) => answersOf(x).paysFor.filter((p) => p.via === kind).map((p) => p.serviceId)))]
     return {
-      id, name: `${label} (nuværende)`, providerName, category: kind, monthly, firstYear: monthly * 12,
-      bindingMonths: bill.bindingLeft ?? 0, includes: [], attributes: {}, verified: true, keep: { memberId, kind },
+      id, name: `${label} (nuværende)${bill.monthly == null ? ', anslået pris' : ''}`, providerName, providerId: bill.providerId ?? undefined, logoId: bill.providerId ?? undefined,
+      category: kind, monthly, firstYear: monthly * 12, bindingMonths: bill.bindingLeft ?? 0,
+      includes: included.map((sid) => ({ serviceId: sid, capacity: this.service.get(sid)?.capacityType === 'seats' ? homeMembers.length : 2 })),
+      attributes: {}, verified: true, keep: { memberId, kind },
     }
+  }
+
+  planPrice(productId: string | null | undefined) {
+    return productId ? this.product.get(productId)?.price ?? null : null
   }
 
   cheapestPrice(serviceId: string) {
@@ -314,10 +330,13 @@ export function currentSpend(cat: Catalog) {
   const homeTv = new Map<string, number>()
   for (const m of cat.ctx.members) {
     const a = answersOf(m)
-    for (const p of a.paysFor) total += p.monthly ?? cat.cheapestPrice(p.serviceId)
-    total += a.mobile?.monthly ?? 0
-    if (a.broadband?.monthly) homeBroadband.set(m.householdId, Math.max(homeBroadband.get(m.householdId) ?? 0, a.broadband.monthly))
-    if (a.tv?.monthly) homeTv.set(m.householdId, Math.max(homeTv.get(m.householdId) ?? 0, a.tv.monthly))
+    for (const p of a.paysFor) {
+      if ((p.via ?? 'self') !== 'self') continue // included in a bill, or paid by someone else
+      total += p.monthly ?? cat.planPrice(p.productId) ?? cat.cheapestPrice(p.serviceId)
+    }
+    if (a.mobile) total += a.mobile.monthly ?? estimateBill(cat, 'mobile', a.mobile.providerId)
+    if (a.broadband) homeBroadband.set(m.householdId, Math.max(homeBroadband.get(m.householdId) ?? 0, a.broadband.monthly ?? estimateBill(cat, 'broadband', a.broadband.providerId)))
+    if (a.tv) homeTv.set(m.householdId, Math.max(homeTv.get(m.householdId) ?? 0, a.tv.monthly ?? estimateBill(cat, 'tv', a.tv.providerId)))
   }
   for (const v of homeBroadband.values()) total += v
   for (const v of homeTv.values()) total += v
@@ -404,25 +423,85 @@ const canPool = (svc: Service, tolerance: number) =>
 let seq = 0
 const pid = () => `p${Date.now().toString(36)}${(seq++).toString(36)}`
 
+export interface OptimiseOptions {
+  /** Wanted services to leave out (to fit a budget). */
+  exclude?: Set<string>
+  /** Allow ad-supported plans. Default true. */
+  adsOk?: boolean
+  /** Allow plans with a binding period. Default true. */
+  allowBinding?: boolean
+  /** Switch mobile/internet when it pays off (still respects people who said no). Default true. */
+  switchTelco?: boolean
+}
+
 /**
  * mode 'legal': only share where the terms allow.
  * mode 'bend': also share across homes for services enforced at or below `tolerance`.
  */
-export function optimise(cat: Catalog, mode: 'legal' | 'bend', tolerance: Enforcement = 'high'): BoardPackage[] {
+export function optimise(cat: Catalog, mode: 'legal' | 'bend', tolerance: Enforcement = 'high', opts: OptimiseOptions = {}): BoardPackage[] {
   const { members, households } = cat.ctx
+  const { exclude, adsOk = true, allowBinding = true, switchTelco = true } = opts
   const concurrency = cat.ctx.concurrency ?? 0.5
   const tol = mode === 'legal' ? 0 : ENFORCEMENT_RANK[tolerance]
   const memberById = new Map(members.map((m) => [m.id, m]))
   const packages: BoardPackage[] = []
   const name = (hid: string) => households.find((h) => h.id === hid)?.name ?? 'Hjem'
+  const okBinding = (p: Product) => allowBinding || p.bindingMonths === 0
+
+  // --- Telco first: services included in a kept mobile/internet/TV bill don't need buying.
+  const telco: BoardPackage[] = []
+  const coveredByKeep = new Set<string>() // `${memberId}:${serviceId}`
+  const mobileProducts = cat.ctx.products.filter((p) => p.active && p.category === 'mobile' && okBinding(p))
+  const broadbandProducts = cat.ctx.products.filter((p) => p.active && p.category === 'broadband' && okBinding(p))
+  const willSwitch = (a: Answers, saving: number, threshold: number) =>
+    switchTelco && (a.willingToSwitch === 'yes' || (a.willingToSwitch === 'if-worth-it' && saving >= threshold))
+  const coverVia = (m: Member, via: PaidVia) => {
+    for (const p of answersOf(m).paysFor) if ((p.via ?? 'self') === via) coveredByKeep.add(`${m.id}:${p.serviceId}`)
+  }
+  for (const h of households) {
+    const home = members.filter((m) => m.householdId === h.id)
+    const ids: string[] = []
+    const users: string[] = []
+    for (const m of home) {
+      const a = answersOf(m)
+      if (!a.mobile) continue
+      users.push(m.id)
+      const minData = a.dataNeed === 'low' ? 0 : a.dataNeed === 'mid' ? 30 : 100
+      const best = mobileProducts
+        .filter((p) => (p.attributes.lines ?? 1) === 1 && ((p.attributes.dataGb ?? 0) === -1 || (p.attributes.dataGb ?? 0) >= minData))
+        .sort((x, y) => firstYear(x) - firstYear(y))[0]
+      const current = a.mobile.monthly ?? estimateBill(cat, 'mobile', a.mobile.providerId)
+      if (best && best.price < current && willSwitch(a, current - best.price, 30)) ids.push(best.id)
+      else {
+        ids.push(`${KEEP_PREFIX}mobile:${m.id}`)
+        coverVia(m, 'mobile')
+      }
+    }
+    const bbOwner = home.find((m) => answersOf(m).broadband)
+    if (bbOwner) {
+      const a = answersOf(bbOwner)
+      const best = broadbandProducts.filter((p) => (p.attributes.speedMbit ?? 0) >= 500).sort((x, y) => firstYear(x) - firstYear(y))[0]
+      const current = a.broadband!.monthly ?? estimateBill(cat, 'broadband', a.broadband!.providerId)
+      if (best && best.price < current && (a.broadband!.bindingLeft ?? 0) === 0 && willSwitch(a, current - best.price, 40)) ids.push(best.id)
+      else {
+        ids.push(`${KEEP_PREFIX}broadband:${bbOwner.id}`)
+        for (const m of home) coverVia(m, 'broadband')
+      }
+    }
+    const tvOwner = home.find((m) => answersOf(m).tv)
+    if (tvOwner) {
+      ids.push(`${KEEP_PREFIX}tv:${tvOwner.id}`)
+      for (const m of home) coverVia(m, 'tv')
+    }
+    if (ids.length) telco.push({ id: pid(), name: `Mobil & internet · ${h.name}`, householdId: h.id, productIds: ids, memberIds: users.length ? users : home.map((m) => m.id) })
+  }
 
   const streamOptions = (unitMembers: string[]): Option[] => {
     const answers = unitMembers.map((id) => answersOf(memberById.get(id)!))
-    const adsOk = answers.every((a) => a.adsOk)
     const allStudents = answers.length === 1 && answers[0].student
     return cat.ctx.products
       .filter((p) => p.active && (p.category === 'streaming' || p.category === 'bundle') && p.includes.length)
-      .filter((p) => adsOk || !p.attributes.ads)
+      .filter((p) => (adsOk || !p.attributes.ads) && okBinding(p))
       .filter((p) => !p.attributes.requires || (p.attributes.requires === 'student' && allStudents))
       .map((p) => ({ id: p.id, price: p.price, capacity: new Map(p.includes.map((i) => [i.serviceId, i.capacity])), product: p }))
   }
@@ -435,9 +514,11 @@ export function optimise(cat: Catalog, mode: 'legal' | 'bend', tolerance: Enforc
     const a = answersOf(m)
     for (const sid of a.wants) {
       const svc = cat.service.get(sid)
-      if (!svc || svc.category === 'free') continue
-      // People who won't switch keep their current streaming as it is.
-      if (a.willingToSwitch === 'no' && a.paysFor.some((p) => p.serviceId === sid)) {
+      if (!svc || svc.category === 'free' || exclude?.has(sid)) continue
+      if (coveredByKeep.has(`${m.id}:${sid}`)) continue
+      const paid = a.paysFor.find((p) => p.serviceId === sid)
+      // Someone outside the family pays, or the person won't switch: keep it as it is.
+      if (paid && ((paid.via ?? 'self') === 'other' || (a.willingToSwitch === 'no' && (paid.via ?? 'self') === 'self'))) {
         keepers.set(m.id, [...(keepers.get(m.id) ?? []), `${KEEP_PREFIX}streaming:${m.id}:${sid}`])
         continue
       }
@@ -462,13 +543,7 @@ export function optimise(cat: Catalog, mode: 'legal' | 'bend', tolerance: Enforc
       const homeCount = new Map<string, number>()
       for (const u of pkgUsers) homeCount.set(memberById.get(u)!.householdId, (homeCount.get(memberById.get(u)!.householdId) ?? 0) + 1)
       const payer = [...homeCount].sort((a, b) => b[1] - a[1])[0]?.[0] ?? unit.householdId
-      packages.push({
-        id: pid(),
-        name: label,
-        householdId: payer,
-        productIds: Array(ch.copies).fill(ch.option.id),
-        memberIds: pkgUsers,
-      })
+      packages.push({ id: pid(), name: label, householdId: payer, productIds: Array(ch.copies).fill(ch.option.id), memberIds: pkgUsers })
     }
   }
 
@@ -484,48 +559,124 @@ export function optimise(cat: Catalog, mode: 'legal' | 'bend', tolerance: Enforc
 
   // Netflix-style extra members: replace a home's own plan with a slot on another home's plan when cheaper (legal).
   applyExtraMembers(cat, packages)
-
-  // Merge streaming packages per home into one tidy package each (pooled ones stay separate).
   const merged = mergeByHome(cat, packages, (hid, shared) => (shared ? `Delt med andre hjem · betales af ${name(hid)}` : `Streaming · ${name(hid)}`))
-
-  // Keepers
   for (const [mid, ids] of keepers) {
     merged.push({ id: pid(), name: `Beholder · ${memberById.get(mid)!.name}`, householdId: memberById.get(mid)!.householdId, productIds: ids, memberIds: [mid] })
   }
+  return [...merged, ...telco]
+}
 
-  // --- Telco
-  const mobileProducts = cat.ctx.products.filter((p) => p.active && p.category === 'mobile')
-  const broadbandProducts = cat.ctx.products.filter((p) => p.active && p.category === 'broadband')
-  for (const h of households) {
-    const home = members.filter((m) => m.householdId === h.id)
-    const ids: string[] = []
-    const users: string[] = []
-    for (const m of home) {
-      const a = answersOf(m)
-      if (!a.mobile) continue
-      users.push(m.id)
-      const minData = a.dataNeed === 'low' ? 0 : a.dataNeed === 'mid' ? 30 : 100
-      const best = mobileProducts
-        .filter((p) => (p.attributes.lines ?? 1) === 1 && ((p.attributes.dataGb ?? 0) === -1 || (p.attributes.dataGb ?? 0) >= minData))
-        .sort((x, y) => firstYear(x) - firstYear(y))[0]
-      const keepId = `${KEEP_PREFIX}mobile:${m.id}`
-      const current = a.mobile.monthly ?? Infinity
-      const switching = a.willingToSwitch === 'yes' || (a.willingToSwitch === 'if-worth-it' && best && current - best.price >= 30)
-      ids.push(switching && best && best.price < current ? best.id : keepId)
+/** A typical price for a bill the person didn't put a price on: the provider's cheapest plan, else a market average. */
+export function estimateBill(cat: Catalog, kind: 'mobile' | 'broadband' | 'tv', providerId: string | null) {
+  const fallback = { mobile: 149, broadband: 299, tv: 299 }[kind]
+  if (!providerId) return fallback
+  const prices = cat.ctx.products.filter((p) => p.active && p.providerId === providerId && p.category === kind).map((p) => p.price)
+  return prices.length ? Math.min(...prices) : fallback
+}
+
+// ---------------------------------------------------------------------------
+// Budget frontier: the best set of services for each price level
+// ---------------------------------------------------------------------------
+
+export interface FrontierPoint {
+  monthly: number
+  /** Wanted services this point covers. */
+  services: string[]
+  /** Wanted services left out. */
+  dropped: string[]
+  /** Sum of wish weights covered (must-have counts 3, nice-to-have 1, per person). */
+  score: number
+  board: BoardPackage[]
+}
+
+export interface FrontierInput {
+  mode: 'legal' | 'bend'
+  tolerance: Enforcement
+  opts: OptimiseOptions
+}
+
+/** Each wanted service, how many want it, and whether anyone must have it. */
+export function wishes(cat: Catalog) {
+  const out = new Map<string, { weight: number; people: string[]; must: boolean }>()
+  for (const m of cat.ctx.members) {
+    const a = answersOf(m)
+    for (const sid of a.wants) {
+      const svc = cat.service.get(sid)
+      if (!svc || svc.category === 'free') continue
+      const must = (a.mustHave ?? []).includes(sid)
+      const w = out.get(sid) ?? { weight: 0, people: [], must: false }
+      w.weight += must ? 3 : 1
+      w.people.push(m.id)
+      w.must ||= must
+      out.set(sid, w)
     }
-    const bbOwner = home.find((m) => answersOf(m).broadband)
-    if (bbOwner) {
-      const a = answersOf(bbOwner)
-      const best = broadbandProducts.filter((p) => (p.attributes.speedMbit ?? 0) >= 500).sort((x, y) => firstYear(x) - firstYear(y))[0]
-      const current = a.broadband!.monthly ?? Infinity
-      const switching = a.willingToSwitch === 'yes' || (a.willingToSwitch === 'if-worth-it' && best && current - best.price >= 40)
-      ids.push(switching && best && best.price < current && (a.broadband!.bindingLeft ?? 0) === 0 ? best.id : `${KEEP_PREFIX}broadband:${bbOwner.id}`)
-    }
-    const tvOwner = home.find((m) => answersOf(m).tv)
-    if (tvOwner) ids.push(`${KEEP_PREFIX}tv:${tvOwner.id}`)
-    if (ids.length) merged.push({ id: pid(), name: `Mobil & internet · ${h.name}`, householdId: h.id, productIds: ids, memberIds: users.length ? users : home.map((m) => m.id) })
   }
-  return merged
+  return out
+}
+
+/**
+ * Greedy frontier: start with every wish, then repeatedly drop the nice-to-have
+ * that saves the most money per lost wish. Must-haves are never dropped.
+ * Points are ordered from most to fewest services.
+ */
+export function frontier(cat: Catalog, { mode, tolerance, opts }: FrontierInput): FrontierPoint[] {
+  const w = wishes(cat)
+  const all = [...w.keys()]
+  const evalFor = (exclude: Set<string>) => {
+    const board = optimise(cat, mode, tolerance, { ...opts, exclude })
+    return { board, monthly: evaluate(cat, board).monthly }
+  }
+  const point = (exclude: Set<string>, r: { board: BoardPackage[]; monthly: number }): FrontierPoint => {
+    const services = all.filter((s) => !exclude.has(s))
+    return { monthly: r.monthly, services, dropped: [...exclude], score: services.reduce((n, s) => n + w.get(s)!.weight, 0), board: r.board }
+  }
+  const exclude = new Set<string>()
+  let cur = evalFor(exclude)
+  const points = [point(exclude, cur)]
+  for (;;) {
+    let best: { sid: string; r: ReturnType<typeof evalFor>; ratio: number } | null = null
+    for (const sid of all) {
+      if (exclude.has(sid) || w.get(sid)!.must) continue
+      const r = evalFor(new Set([...exclude, sid]))
+      const saving = cur.monthly - r.monthly
+      if (saving <= 0.5) continue
+      const ratio = saving / w.get(sid)!.weight
+      if (!best || ratio > best.ratio) best = { sid, r, ratio }
+    }
+    if (!best) break
+    exclude.add(best.sid)
+    cur = best.r
+    points.push(point(exclude, cur))
+  }
+  return points
+}
+
+/** The point with the most wishes that fits the budget; else the cheapest point. */
+export function pickForBudget(points: FrontierPoint[], budget: number) {
+  return points.find((p) => p.monthly <= budget + 0.5) ?? points[points.length - 1]
+}
+
+/**
+ * Frontier pick plus a fill-up pass: add left-out services back, most wanted first,
+ * while the total still fits the budget. Catches cases the greedy path misses.
+ */
+export function bestForBudget(cat: Catalog, input: FrontierInput, budget: number, points = frontier(cat, input)): FrontierPoint {
+  const pick = pickForBudget(points, budget)
+  if (pick.monthly > budget + 0.5) return pick
+  const w = wishes(cat)
+  let exclude = new Set(pick.dropped)
+  let best = pick
+  for (const sid of [...pick.dropped].sort((a, b) => w.get(b)!.weight - w.get(a)!.weight)) {
+    const trial = new Set([...exclude].filter((x) => x !== sid))
+    const board = optimise(cat, input.mode, input.tolerance, { ...input.opts, exclude: trial })
+    const monthly = evaluate(cat, board).monthly
+    if (monthly <= budget + 0.5) {
+      exclude = trial
+      const services = [...w.keys()].filter((x) => !trial.has(x))
+      best = { monthly, services, dropped: [...trial], score: services.reduce((n, x) => n + w.get(x)!.weight, 0), board }
+    }
+  }
+  return best
 }
 
 function applyExtraMembers(cat: Catalog, packages: BoardPackage[]) {

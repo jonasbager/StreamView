@@ -10,11 +10,15 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ f
   if (!target) redirect('/app/family')
   if (target.userId && target.userId !== me.userId) redirect('/app/family')
 
-  const cheapest = Object.fromEntries(
-    ctx.services.map((s) => {
-      const prices = ctx.products.filter((p) => p.category === 'streaming' && p.includes.some((i) => i.serviceId === s.id) && !p.attributes.requires).map((p) => p.price)
-      return [s.id, prices.length ? Math.min(...prices) : 0]
-    }),
+  // The plans you can have for each service (incl. bundles that contain it, like Apple One).
+  const plans = Object.fromEntries(
+    ctx.services.map((s) => [
+      s.id,
+      ctx.products
+        .filter((p) => p.active && (p.category === 'streaming' || p.category === 'bundle') && p.includes.some((i) => i.serviceId === s.id))
+        .sort((a, b) => a.price - b.price)
+        .map((p) => ({ id: p.id, name: p.category === 'bundle' ? p.name : p.name, price: p.price })),
+    ]),
   )
   return (
     <Onboarding
@@ -24,7 +28,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ f
       initial={target.answers ? answersOf(target) : null}
       services={ctx.services.map((s) => ({ id: s.id, name: s.name, color: s.color, category: s.category }))}
       telcos={ctx.providers.filter((p) => p.kind === 'telco').map((p) => ({ id: p.id, name: p.name, offers: p.offers }))}
-      cheapest={cheapest}
+      plans={plans}
     />
   )
 }

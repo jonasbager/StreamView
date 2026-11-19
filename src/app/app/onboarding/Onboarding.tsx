@@ -2,8 +2,8 @@
 
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
-import { Mark } from '@/components/ui'
-import type { Answers, CurrentBill } from '@/db/schema'
+import { BrandMark } from '@/components/BrandMark'
+import type { Answers, CurrentBill, PaidService, PaidVia } from '@/db/schema'
 import { saveAnswers } from '../actions'
 
 interface Props {
@@ -13,14 +13,15 @@ interface Props {
   initial: Answers | null
   services: { id: string; name: string; color: string; category: string }[]
   telcos: { id: string; name: string; offers: ('mobile' | 'broadband' | 'tv')[] }[]
-  cheapest: Record<string, number>
+  plans: Record<string, { id: string; name: string; price: number }[]>
 }
 
-const STEPS = ['Betaler for', 'Vil gerne have', 'Mobil & internet', 'Skifte?']
+const STEPS = ['Har i dag', 'Ønsker', 'Mobil & internet', 'Skifte?']
 
 const empty: Answers = {
   paysFor: [],
-  wants: ['drtv'],
+  wants: [],
+  mustHave: [],
   mobile: null,
   broadband: null,
   tv: null,
@@ -30,7 +31,7 @@ const empty: Answers = {
   student: false,
 }
 
-export function Onboarding({ memberId, initialName, forSomeoneElse, initial, services, telcos, cheapest }: Props) {
+export function Onboarding({ memberId, initialName, forSomeoneElse, initial, services, telcos, plans }: Props) {
   const router = useRouter()
   const [step, setStep] = useState(0)
   const [name, setName] = useState(initialName)
@@ -42,9 +43,23 @@ export function Onboarding({ memberId, initialName, forSomeoneElse, initial, ser
   const pays = (id: string) => a.paysFor.find((p) => p.serviceId === id)
   const togglePays = (id: string) => {
     if (pays(id)) set({ paysFor: a.paysFor.filter((p) => p.serviceId !== id) })
-    else set({ paysFor: [...a.paysFor, { serviceId: id, monthly: cheapest[id] ?? null }], wants: a.wants.includes(id) ? a.wants : [...a.wants, id] })
+    else {
+      const plan = plans[id]?.[0]
+      // Having it today usually means you want to keep it: mark it as wished.
+      set({
+        paysFor: [...a.paysFor, { serviceId: id, productId: plan?.id ?? null, monthly: plan?.price ?? null, via: 'self' }],
+        wants: a.wants.includes(id) ? a.wants : [...a.wants, id],
+      })
+    }
   }
-  const toggleWant = (id: string) => set({ wants: a.wants.includes(id) ? a.wants.filter((w) => w !== id) : [...a.wants, id] })
+  const updatePaid = (id: string, patch: Partial<PaidService>) =>
+    set({ paysFor: a.paysFor.map((x) => (x.serviceId === id ? { ...x, ...patch } : x)) })
+  const wishLevel = (id: string): 'no' | 'nice' | 'must' => ((a.mustHave ?? []).includes(id) ? 'must' : a.wants.includes(id) ? 'nice' : 'no')
+  const setWish = (id: string, level: 'no' | 'nice' | 'must') =>
+    set({
+      wants: level === 'no' ? a.wants.filter((w) => w !== id) : a.wants.includes(id) ? a.wants : [...a.wants, id],
+      mustHave: level === 'must' ? [...new Set([...(a.mustHave ?? []), id])] : (a.mustHave ?? []).filter((w) => w !== id),
+    })
 
   const finish = () =>
     start(async () => {
@@ -58,7 +73,7 @@ export function Onboarding({ memberId, initialName, forSomeoneElse, initial, ser
     })
 
   const paid = services.filter((s) => s.category !== 'free')
-  const total = a.paysFor.reduce((s, p) => s + (p.monthly ?? 0), 0) + (a.mobile?.monthly ?? 0) + (a.broadband?.monthly ?? 0) + (a.tv?.monthly ?? 0)
+  const total = a.paysFor.reduce((s, p) => s + ((p.via ?? 'self') === 'self' ? p.monthly ?? 0 : 0), 0) + (a.mobile?.monthly ?? 0) + (a.broadband?.monthly ?? 0) + (a.tv?.monthly ?? 0)
 
   return (
     <div className="mx-auto max-w-2xl">
@@ -79,43 +94,83 @@ export function Onboarding({ memberId, initialName, forSomeoneElse, initial, ser
 
       {step === 0 && (
         <section>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Hvad betaler du for i dag?</h1>
-          <p className="mt-2 text-ink-2">Kun det du selv betaler. Juster prisen, hvis du kender den.</p>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Hvad har du i dag?</h1>
+          <p className="mt-2 text-ink-2">
+            Vælg de tjenester, du har adgang til nu, og fortæl hvordan. Fx er HBO Max tit med i et mobilabonnement, og Netflix kan
+            være en del af en tv-pakke.
+          </p>
           {forSomeoneElse && (
             <label className="mt-6 block max-w-xs">
               <span className="label">Navn</span>
               <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
             </label>
           )}
-          <div className="mt-6 grid gap-2 sm:grid-cols-2">
+          <div className="mt-6 grid min-w-0 gap-2">
             {paid.map((s) => {
               const p = pays(s.id)
               return (
-                <div
-                  key={s.id}
-                  className={`flex items-center gap-3 rounded-2xl border px-3 py-2.5 transition ${p ? 'border-ink bg-card' : 'border-line bg-card/60 hover:border-ink-3'}`}
-                >
-                  <button type="button" onClick={() => togglePays(s.id)} className="flex flex-1 items-center gap-3 text-left">
-                    <Mark name={s.name} color={s.color} />
-                    <span className="font-medium">{s.name}</span>
+                <div key={s.id} className={`min-w-0 rounded-2xl border bg-card transition ${p ? 'border-ink' : 'border-line hover:border-ink-3'}`}>
+                  <button type="button" onClick={() => togglePays(s.id)} className="flex w-full items-center gap-3 px-3 py-2.5 text-left">
+                    <BrandMark id={s.id} name={s.name} color={s.color} />
+                    <span className="flex-1 font-medium">{s.name}</span>
+                    <span className={`grid size-6 place-items-center rounded-full border text-sm ${p ? 'border-ink bg-ink text-paper' : 'border-line-2 text-transparent'}`}>✓</span>
                   </button>
-                  {p ? (
-                    <label className="flex items-center gap-1 text-sm text-ink-2">
-                      <input
-                        type="number"
-                        min={0}
-                        inputMode="numeric"
-                        value={p.monthly ?? ''}
-                        onChange={(e) =>
-                          set({ paysFor: a.paysFor.map((x) => (x.serviceId === s.id ? { ...x, monthly: e.target.value === '' ? null : Number(e.target.value) } : x)) })
-                        }
-                        className="num h-9 w-20 rounded-lg border border-line-2 px-2 text-right text-ink outline-none focus:border-ink"
-                        aria-label={`Pris for ${s.name}`}
-                      />
-                      kr.
-                    </label>
-                  ) : (
-                    <span className="text-sm text-ink-3">Nej</span>
+                  {p && (
+                    <div className="grid min-w-0 gap-3 border-t border-line px-3 py-3 sm:grid-cols-[1fr_auto]">
+                      <div>
+                        <span className="label">Hvordan har du det?</span>
+                        <Segmented<PaidVia>
+                          value={p.via ?? 'self'}
+                          onChange={(via) => updatePaid(s.id, { via })}
+                          options={[
+                            ['self', 'Eget abonnement'],
+                            ['mobile', 'Med mobilen'],
+                            ['broadband', 'Med internet'],
+                            ['tv', 'Med TV-pakken'],
+                            ['other', 'En anden betaler'],
+                          ]}
+                        />
+                      </div>
+                      {(p.via ?? 'self') === 'self' && (
+                        <div className="flex min-w-0 flex-wrap gap-2">
+                          <label className="block">
+                            <span className="label">Abonnement</span>
+                            <select
+                              className="input h-10 w-auto max-w-full min-w-0 sm:min-w-40"
+                              value={p.productId ?? ''}
+                              onChange={(e) => {
+                                const plan = plans[s.id]?.find((x) => x.id === e.target.value)
+                                updatePaid(s.id, { productId: plan?.id ?? null, monthly: plan?.price ?? p.monthly })
+                              }}
+                            >
+                              {(plans[s.id] ?? []).map((pl) => (
+                                <option key={pl.id} value={pl.id}>{pl.name} · {pl.price} kr.</option>
+                              ))}
+                              <option value="">Ved ikke</option>
+                            </select>
+                          </label>
+                          <label className="block">
+                            <span className="label">Pris</span>
+                            <input
+                              type="number"
+                              min={0}
+                              inputMode="numeric"
+                              value={p.monthly ?? ''}
+                              placeholder="kr."
+                              onChange={(e) => updatePaid(s.id, { monthly: e.target.value === '' ? null : Number(e.target.value) })}
+                              className="input num h-10 w-24"
+                            />
+                          </label>
+                        </div>
+                      )}
+                      {p.via && p.via !== 'self' && (
+                        <p className="self-end text-sm text-ink-3 sm:col-span-2">
+                          {p.via === 'other'
+                            ? 'Fx en forælder eller ven uden for familien. Vi regner det som gratis for jer.'
+                            : 'Prisen er med i den regning, du fortæller om i trin 3.'}
+                        </p>
+                      )}
+                    </div>
                   )}
                 </div>
               )
@@ -126,17 +181,33 @@ export function Onboarding({ memberId, initialName, forSomeoneElse, initial, ser
 
       {step === 1 && (
         <section>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Hvad vil du gerne kunne se og høre?</h1>
-          <p className="mt-2 text-ink-2">Også det du ikke betaler for i dag. Vi finder den billigste måde at få det på.</p>
-          <div className="mt-6 flex flex-wrap gap-2">
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Hvad vil du gerne have?</h1>
+          <p className="mt-2 text-ink-2">
+            Det er ønsker, ikke køb. Bagefter viser vi, hvor mange af familiens ønsker I kan få for jeres budget.
+            <b className="font-medium text-ink"> Skal have</b> bliver aldrig valgt fra; <b className="font-medium text-ink">Gerne</b> kommer med, hvis
+            der er råd.
+          </p>
+          <ul className="mt-6 divide-y divide-line rounded-2xl border border-line bg-card">
             {services.map((s) => (
-              <button key={s.id} type="button" className="chip" data-on={a.wants.includes(s.id)} onClick={() => toggleWant(s.id)}>
-                <span className="size-2.5 rounded-full" style={{ background: s.color }} />
-                {s.name}
-                {s.category === 'free' && <span className="text-xs opacity-60">gratis</span>}
-              </button>
+              <li key={s.id} className="flex flex-wrap items-center gap-3 px-3 py-2.5">
+                <BrandMark id={s.id} name={s.name} color={s.color} />
+                <span className="min-w-0 flex-1">
+                  <span className="block font-medium">{s.name}</span>
+                  {s.category === 'free' && <span className="block text-xs text-ink-3">Gratis</span>}
+                  {pays(s.id) && <span className="block text-xs text-ink-3">Har du i dag</span>}
+                </span>
+                <Segmented
+                  value={wishLevel(s.id)}
+                  onChange={(v) => setWish(s.id, v)}
+                  options={[
+                    ['no', 'Nej'],
+                    ['nice', 'Gerne'],
+                    ['must', 'Skal have'],
+                  ]}
+                />
+              </li>
             ))}
-          </div>
+          </ul>
         </section>
       )}
 
@@ -144,7 +215,9 @@ export function Onboarding({ memberId, initialName, forSomeoneElse, initial, ser
         <section className="space-y-6">
           <div>
             <h1 className="mt-2 text-3xl font-semibold tracking-tight">Mobil, internet og TV</h1>
-            <p className="mt-2 text-ink-2">Udfyld det, du selv betaler for. Spring resten over.</p>
+            <p className="mt-2 text-ink-2">
+              Udfyld det, du selv betaler for. Kender du ikke prisen, så lad feltet stå tomt, så bruger vi en typisk pris.
+            </p>
           </div>
           <BillField
             title="Mobilabonnement"
@@ -211,7 +284,6 @@ export function Onboarding({ memberId, initialName, forSomeoneElse, initial, ser
             ))}
           </div>
           <div className="card divide-y divide-line">
-            <Check label="Reklamer er okay" sub="Reklameplaner er ofte 30–60 kr. billigere." checked={a.adsOk} onChange={(adsOk) => set({ adsOk })} />
             <Check label="Jeg er studerende" sub="Giver adgang til studierabatter." checked={a.student} onChange={(student) => set({ student })} />
           </div>
           <div className="rounded-2xl bg-sunk px-5 py-4 text-[15px]">
@@ -330,7 +402,7 @@ function BillField({
 
 function Segmented<T extends string>({ value, onChange, options }: { value: T; onChange: (v: T) => void; options: (readonly [T, string, string?])[] }) {
   return (
-    <div className="inline-flex rounded-full border border-line-2 bg-sunk p-0.5">
+    <div className="inline-flex flex-wrap rounded-[18px] border border-line-2 bg-sunk p-0.5">
       {options.map(([v, l, sub]) => (
         <button
           key={v}

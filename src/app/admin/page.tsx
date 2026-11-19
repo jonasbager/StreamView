@@ -1,6 +1,6 @@
 import { desc, eq } from 'drizzle-orm'
 import { SubmitButton } from '@/components/SubmitButton'
-import { Mark } from '@/components/ui'
+import { BrandMark } from '@/components/BrandMark'
 import { db, priceChanges, priceRuns, products, providers } from '@/db'
 import { kr } from '@/lib/format'
 import { approveAll, decide, runNow, setPriceUrls } from './actions'
@@ -42,7 +42,7 @@ export default async function Admin() {
             {byProvider.map(({ p, changes }) => (
               <div key={p.id} className="card">
                 <div className="flex items-center gap-3 border-b border-line px-5 py-4">
-                  <Mark name={p.name} color={p.color} />
+                  <BrandMark id={p.id} name={p.name} color={p.color} />
                   <div className="flex-1 font-semibold">{p.name}</div>
                   <form action={approveAll.bind(null, p.id)}>
                     <SubmitButton pendingText="Godkender…" className="btn-quiet btn-sm">Godkend alle</SubmitButton>

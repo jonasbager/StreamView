@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Answers, Member, Product } from '@/db/schema'
 import { PRODUCTS, PROVIDERS, SERVICES } from '@/db/seed-data'
-import { Catalog, currentSpend, evaluate, optimise } from './engine'
+import { Catalog, currentSpend, evaluate, frontier, optimise, pickForBudget } from './engine'
 
 const products: Product[] = PRODUCTS.map((p) => ({
   introPrice: null, introMonths: null, setupFee: 0, bindingMonths: 0, includes: [], attributes: {}, offerText: null,
@@ -64,7 +64,7 @@ describe('engine', () => {
       member('b', 'home', { wants: ['netflix'], adsOk: false }),
       member('c', 'gran', { wants: ['netflix'], adsOk: false }),
     ])
-    const r = evaluate(cat, optimise(cat, 'legal'))
+    const r = evaluate(cat, optimise(cat, 'legal', 'high', { adsOk: false }))
     expect(r.monthly).toBe(129 + 49)
     expect(r.packages.every((p) => p.riskyServices.length === 0)).toBe(true)
   })
@@ -90,5 +90,37 @@ describe('engine', () => {
     const cat = make(members)
     const r = evaluate(cat, [{ id: '1', name: 'x', householdId: 'home', productIds: ['netflix-standard'], memberIds: ['anna', 'mormor'] }])
     expect(r.packages[0].risk).toBe('strict')
+  })
+
+  it('builds a budget frontier that never drops must-haves', () => {
+    const cat = make([
+      member('a', 'home', { wants: ['netflix', 'hbomax', 'viaplay', 'disney'], mustHave: ['netflix'] }),
+      member('b', 'home', { wants: ['hbomax', 'disney'] }),
+    ])
+    const pts = frontier(cat, { mode: 'legal', tolerance: 'none', opts: {} })
+    expect(pts[0].services.sort()).toEqual(['disney', 'hbomax', 'netflix', 'viaplay'])
+    for (let i = 1; i < pts.length; i++) expect(pts[i].monthly).toBeLessThan(pts[i - 1].monthly)
+    expect(pts.every((p) => p.services.includes('netflix'))).toBe(true)
+    // Viaplay is wanted by one person and is the most expensive: it goes first.
+    expect(pts[1].dropped).toEqual(['viaplay'])
+    const pick = pickForBudget(pts, pts[1].monthly)
+    expect(pick).toBe(pts[1])
+  })
+
+  it('does not buy a service already included in a kept mobile plan', () => {
+    const cat = make([
+      member('a', 'home', { wants: ['hbomax'], willingToSwitch: 'no', paysFor: [{ serviceId: 'hbomax', monthly: null, via: 'mobile' }], mobile: { providerId: 'telia', monthly: 299 } }),
+    ])
+    const r = evaluate(cat, optimise(cat, 'legal'))
+    expect(r.monthly).toBe(299)
+    expect(r.missing).toEqual([])
+    expect(currentSpend(cat)).toBe(299)
+  })
+
+  it('keeps a service someone outside the family pays for at no cost', () => {
+    const cat = make([member('a', 'home', { wants: ['netflix'], paysFor: [{ serviceId: 'netflix', monthly: null, via: 'other' }] })])
+    const r = evaluate(cat, optimise(cat, 'legal'))
+    expect(r.monthly).toBe(0)
+    expect(r.missing).toEqual([])
   })
 })

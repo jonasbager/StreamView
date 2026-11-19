@@ -88,6 +88,22 @@ export const products = pgTable('products', {
   updatedAt: timestamp('updated_at', { mode: 'string' }).notNull().defaultNow(),
 })
 
+/** Family-wide budget and how flexible the family is willing to be. */
+export interface FamilySettings {
+  /** Monthly budget for everything (streaming, mobile, internet, TV). null = what you pay today. */
+  budget: number | null
+  /** How far to bend sharing rules: 'none' = by the rules only. */
+  tolerance: Enforcement
+  /** Plans with ads are fine. */
+  adsOk: boolean
+  /** Plans with binding are fine. */
+  allowBinding: boolean
+  /** Switch mobile/internet provider when it frees money (respects people who said no). */
+  switchTelco: boolean
+}
+
+export const DEFAULT_SETTINGS: FamilySettings = { budget: null, tolerance: 'none', adsOk: true, allowBinding: true, switchTelco: true }
+
 export const families = pgTable('families', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
@@ -95,6 +111,7 @@ export const families = pgTable('families', {
   inviteCode: text('invite_code').notNull().unique(),
   board: jsonb('board').$type<Board>(),
   recommendation: jsonb('recommendation').$type<Recommendation>(),
+  settings: jsonb('settings').$type<FamilySettings>(),
   createdAt: timestamp('created_at', { mode: 'string' }).notNull().defaultNow(),
 })
 
@@ -117,11 +134,26 @@ export interface CurrentBill {
   bindingLeft?: number | null
 }
 
+/** How a person gets a service today. */
+export type PaidVia = 'self' | 'mobile' | 'broadband' | 'tv' | 'other'
+
+export interface PaidService {
+  serviceId: string
+  /** What they pay for it on its own (only when via = self). */
+  monthly: number | null
+  /** The plan they have, if known (e.g. Spotify Family). */
+  productId?: string | null
+  /** self: own subscription. mobile/broadband/tv: included in that bill. other: someone outside the family pays. */
+  via?: PaidVia
+}
+
 export interface Answers {
-  /** Streaming services this person pays for today, with what they pay. */
-  paysFor: { serviceId: string; monthly: number | null }[]
-  /** Services they want access to. */
+  /** Streaming services this person has today and how they get them. */
+  paysFor: PaidService[]
+  /** Services they'd like access to (nice to have and must have). */
   wants: string[]
+  /** Subset of wants they won't give up, whatever the budget. */
+  mustHave?: string[]
   mobile: CurrentBill | null
   broadband: CurrentBill | null
   tv: CurrentBill | null

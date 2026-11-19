@@ -6,7 +6,7 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { z } from 'zod'
 import { db, families, households, members } from '@/db'
-import type { Answers, Board } from '@/db/schema'
+import type { Answers, Board, FamilySettings } from '@/db/schema'
 import { myMembership, requireFamily, requireUser } from '@/lib/data'
 
 const id = () => crypto.randomUUID()
@@ -69,8 +69,16 @@ const billSchema = z
   .nullable()
 
 const answersSchema = z.object({
-  paysFor: z.array(z.object({ serviceId: z.string(), monthly: z.number().nonnegative().nullable() })),
+  paysFor: z.array(
+    z.object({
+      serviceId: z.string(),
+      monthly: z.number().nonnegative().nullable(),
+      productId: z.string().nullable().optional(),
+      via: z.enum(['self', 'mobile', 'broadband', 'tv', 'other']).optional(),
+    }),
+  ),
   wants: z.array(z.string()),
+  mustHave: z.array(z.string()).optional(),
   mobile: billSchema,
   broadband: billSchema,
   tv: billSchema,
@@ -156,22 +164,28 @@ export async function renameFamily(form: FormData) {
   revalidatePath('/app', 'layout')
 }
 
-export async function generateRecommendation() {
-  const { family, ctx } = await requireFamily()
-  const { recommend } = await import('@/lib/recommend')
-  const rec = await recommend(ctx)
-  await db.update(families).set({ recommendation: rec }).where(eq(families.id, family.id))
-  revalidatePath('/app')
+const settingsSchema = z.object({
+  budget: z.number().nonnegative().max(100000).nullable(),
+  tolerance: z.enum(['none', 'low', 'medium', 'high', 'strict']),
+  adsOk: z.boolean(),
+  allowBinding: z.boolean(),
+  switchTelco: z.boolean(),
+})
+
+export async function saveSettings(settings: FamilySettings) {
+  const { family } = await requireFamily()
+  await db.update(families).set({ settings: settingsSchema.parse(settings) }).where(eq(families.id, family.id))
 }
 
-/** Copy a recommended setup onto the drag-and-drop board. */
-export async function applySetup(setupId: string) {
-  const { family } = await requireFamily()
-  const setup = family.recommendation?.setups.find((s) => s.id === setupId)
-  if (!setup) return
-  await db
-    .update(families)
-    .set({ board: { packages: setup.packages.map((p) => ({ ...p, id: crypto.randomUUID() })), updatedAt: new Date().toISOString() } })
-    .where(eq(families.id, family.id))
+/** Open the budget setup the family picked in the package builder. */
+export async function openBoard(board: Pick<Board, 'packages'>) {
+  await saveBoard(board)
   redirect('/app/builder')
+}
+
+/** Plain-Danish explanation of a setup: what changes for whom and what to do. */
+export async function explainBoard(board: Pick<Board, 'packages'>, mode: 'legal' | 'bend') {
+  const { ctx } = await requireFamily()
+  const { explain } = await import('@/lib/recommend')
+  return explain(ctx, boardSchema.parse(board).packages, mode)
 }
