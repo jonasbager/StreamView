@@ -28,6 +28,23 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ f
       initial={target.answers ? answersOf(target) : null}
       services={ctx.services.map((s) => ({ id: s.id, name: s.name, color: s.color, category: s.category }))}
       telcos={ctx.providers.filter((p) => p.kind === 'telco').map((p) => ({ id: p.id, name: p.name, offers: p.offers }))}
+      telcoPlans={ctx.products
+        .filter((p) => p.active && ['mobile', 'broadband', 'tv'].includes(p.category))
+        .sort((a, b) => a.price - b.price)
+        .map((p) => ({
+          id: p.id,
+          providerId: p.providerId,
+          category: p.category as 'mobile' | 'broadband' | 'tv',
+          name: p.name,
+          price: p.price,
+          introPrice: p.introPrice,
+          introMonths: p.introMonths,
+          bindingMonths: p.bindingMonths,
+          dataGb: p.attributes.dataGb ?? null,
+          speedMbit: p.attributes.speedMbit ?? null,
+          includes: p.includes.map((i) => i.serviceId),
+          choose: p.attributes.choose ?? null,
+        }))}
       plans={plans}
     />
   )

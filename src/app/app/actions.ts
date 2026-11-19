@@ -62,6 +62,8 @@ export async function joinFamily(inviteCode: string, form: FormData) {
 const billSchema = z
   .object({
     providerId: z.string().nullable(),
+    productId: z.string().nullable().optional(),
+    choices: z.array(z.string()).optional(),
     other: z.string().optional(),
     monthly: z.number().nonnegative().nullable(),
     bindingLeft: z.number().int().nonnegative().nullable().optional(),

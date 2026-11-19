@@ -153,16 +153,17 @@ export class Catalog {
     const bill = a[kind]
     if (!bill) return null
     const providerName = bill.providerId ? this.provider.get(bill.providerId)?.name ?? bill.providerId : bill.other || 'Ukendt'
-    const label = kind === 'mobile' ? 'Mobil' : kind === 'broadband' ? 'Internet' : 'TV'
-    const monthly = bill.monthly ?? estimateBill(this, kind, bill.providerId)
+    const plan = bill.productId ? this.product.get(bill.productId) : undefined
+    const label = plan?.name ?? (kind === 'mobile' ? 'Mobil' : kind === 'broadband' ? 'Internet' : 'TV')
+    const monthly = bill.monthly ?? plan?.price ?? estimateBill(this, kind, bill.providerId)
     // Streaming included in this bill (e.g. HBO Max with the mobile plan).
     const homeMembers = kind === 'mobile' ? [m] : this.ctx.members.filter((x) => x.householdId === m.householdId)
     const included = [...new Set(homeMembers.flatMap((x) => answersOf(x).paysFor.filter((p) => p.via === kind).map((p) => p.serviceId)))]
     return {
-      id, name: `${label}${bill.monthly == null ? ' (anslået pris)' : ''}`, providerName, providerId: bill.providerId ?? undefined, logoId: bill.providerId ?? undefined,
+      id, name: `${label}${bill.monthly == null && !plan ? ' (anslået pris)' : ''}`, providerName, providerId: bill.providerId ?? undefined, logoId: bill.providerId ?? undefined,
       category: kind, monthly, firstYear: monthly * 12, bindingMonths: bill.bindingLeft ?? 0,
       includes: included.map((sid) => ({ serviceId: sid, capacity: this.service.get(sid)?.capacityType === 'seats' ? homeMembers.length : 2 })),
-      attributes: {}, verified: true, keep: { memberId, kind },
+      attributes: plan ? { dataGb: plan.attributes.dataGb, speedMbit: plan.attributes.speedMbit } : {}, verified: true, keep: { memberId, kind },
     }
   }
 

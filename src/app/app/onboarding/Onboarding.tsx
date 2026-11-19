@@ -14,7 +14,25 @@ interface Props {
   services: { id: string; name: string; color: string; category: string }[]
   telcos: { id: string; name: string; offers: ('mobile' | 'broadband' | 'tv')[] }[]
   plans: Record<string, { id: string; name: string; price: number }[]>
+  telcoPlans: TelcoPlan[]
 }
+
+export interface TelcoPlan {
+  id: string
+  providerId: string
+  category: 'mobile' | 'broadband' | 'tv'
+  name: string
+  price: number
+  introPrice: number | null
+  introMonths: number | null
+  bindingMonths: number
+  dataGb: number | null
+  speedMbit: number | null
+  includes: string[]
+  choose: { count: number; from: string[] } | null
+}
+
+type BillKind = 'mobile' | 'broadband' | 'tv'
 
 const STEPS = ['Har i dag', 'Ønsker', 'Mobil & internet', 'Skifte?']
 
@@ -41,7 +59,7 @@ const empty: Answers = {
   student: false,
 }
 
-export function Onboarding({ memberId, initialName, forSomeoneElse, initial, services, telcos, plans }: Props) {
+export function Onboarding({ memberId, initialName, forSomeoneElse, initial, services, telcos, plans, telcoPlans }: Props) {
   const router = useRouter()
   const [step, setStep] = useState(0)
   const [name, setName] = useState(initialName)
@@ -69,6 +87,32 @@ export function Onboarding({ memberId, initialName, forSomeoneElse, initial, ser
     set({
       wants: level === 'no' ? a.wants.filter((w) => w !== id) : a.wants.includes(id) ? a.wants : [...a.wants, id],
       mustHave: level === 'must' ? [...new Set([...(a.mustHave ?? []), id])] : (a.mustHave ?? []).filter((w) => w !== id),
+    })
+
+  /**
+   * Set a mobile/internet/TV bill. Streaming included in the chosen plan is added to
+   * "what you have" as paid via that bill, so it's never counted twice.
+   */
+  const setBill = (kind: BillKind, bill: CurrentBill | null) =>
+    setA((x) => {
+      const includedBy = (b: CurrentBill | null | undefined) => {
+        const pl = b?.productId ? telcoPlans.find((p) => p.id === b.productId) : undefined
+        return [...new Set([...(pl?.includes ?? []), ...(pl?.choose ? b?.choices ?? [] : [])])].filter((sid) => services.some((s) => s.id === sid))
+      }
+      const plan = bill?.productId ? telcoPlans.find((p) => p.id === bill.productId) : undefined
+      const included = includedBy(bill)
+      // Only remove services the previous plan added; keep ones the person marked themselves.
+      const previous = includedBy(x[kind])
+      const kept = x.paysFor.filter((p) => p.via !== kind || included.includes(p.serviceId) || !previous.includes(p.serviceId))
+      const added = included.filter((sid) => !kept.some((p) => p.serviceId === sid)).map((sid) => ({ serviceId: sid, monthly: null, via: kind }) as PaidService)
+      const dataNeed = kind === 'mobile' && plan?.dataGb != null ? (plan.dataGb === -1 || plan.dataGb > 50 ? 'high' : plan.dataGb >= 10 ? 'mid' : 'low') : x.dataNeed
+      return {
+        ...x,
+        [kind]: bill,
+        dataNeed,
+        paysFor: [...kept, ...added],
+        wants: [...new Set([...x.wants, ...included])],
+      }
     })
 
   const finish = () =>
@@ -240,10 +284,12 @@ export function Onboarding({ memberId, initialName, forSomeoneElse, initial, ser
           <BillField
             title="Mobilabonnement"
             value={a.mobile}
-            onChange={(mobile) => set({ mobile })}
+            onChange={(mobile) => setBill('mobile', mobile)}
             telcos={telcos.filter((t) => t.offers.includes('mobile'))}
+            plans={telcoPlans.filter((p) => p.category === 'mobile')}
+            services={services}
           >
-            <div className="mt-4">
+            <div className={`mt-4 ${a.mobile?.productId && telcoPlans.find((p) => p.id === a.mobile?.productId)?.dataGb != null ? 'hidden' : ''}`}>
               <span className="label">Hvor meget data bruger du?</span>
               <Segmented
                 value={a.dataNeed}
@@ -260,16 +306,20 @@ export function Onboarding({ memberId, initialName, forSomeoneElse, initial, ser
             title="Internet derhjemme"
             hint="Kun hvis du står for regningen"
             value={a.broadband}
-            onChange={(broadband) => set({ broadband })}
+            onChange={(broadband) => setBill('broadband', broadband)}
             telcos={telcos.filter((t) => t.offers.includes('broadband'))}
+            plans={telcoPlans.filter((p) => p.category === 'broadband')}
+            services={services}
             binding
           />
           <BillField
             title="TV-pakke"
             hint="Fx YouSee, Norlys eller Waoo"
             value={a.tv}
-            onChange={(tv) => set({ tv })}
+            onChange={(tv) => setBill('tv', tv)}
             telcos={telcos.filter((t) => t.offers.includes('tv'))}
+            plans={telcoPlans.filter((p) => p.category === 'tv')}
+            services={services}
             binding
           />
         </section>
@@ -335,6 +385,8 @@ function BillField({
   value,
   onChange,
   telcos,
+  plans,
+  services,
   binding,
   children,
 }: {
@@ -343,10 +395,17 @@ function BillField({
   value: CurrentBill | null
   onChange: (v: CurrentBill | null) => void
   telcos: { id: string; name: string }[]
+  plans: TelcoPlan[]
+  services: Props['services']
   binding?: boolean
   children?: React.ReactNode
 }) {
   const on = value !== null
+  const providerPlans = value?.providerId ? plans.filter((p) => p.providerId === value.providerId) : []
+  const plan = value?.productId ? plans.find((p) => p.id === value.productId) : undefined
+  const pickPlan = (p: TelcoPlan | null) =>
+    onChange({ ...value!, productId: p?.id ?? null, monthly: p ? p.price : value!.monthly, choices: p?.choose ? (value!.choices ?? []).filter((c) => p.choose!.from.includes(c)).slice(0, p.choose.count) : undefined })
+  const svcName = (sid: string) => services.find((s) => s.id === sid)?.name ?? sid
   return (
     <div className="card p-5">
       <div className="flex items-center justify-between gap-4">
@@ -356,7 +415,7 @@ function BillField({
         </div>
         <Segmented
           value={on ? 'yes' : 'no'}
-          onChange={(v) => onChange(v === 'yes' ? { providerId: telcos[0]?.id ?? null, monthly: null, bindingLeft: 0 } : null)}
+          onChange={(v) => onChange(v === 'yes' ? { providerId: telcos[0]?.id ?? null, productId: null, monthly: null, bindingLeft: 0 } : null)}
           options={[
             ['no', 'Nej'],
             ['yes', 'Ja'],
@@ -364,13 +423,13 @@ function BillField({
         />
       </div>
       {on && (
-        <div className="mt-4 grid gap-3 sm:grid-cols-3">
-          <label className="block sm:col-span-1">
+        <div className="mt-4 space-y-4">
+          <label className="block max-w-xs">
             <span className="label">Selskab</span>
             <select
               className="input"
               value={value.providerId ?? 'other'}
-              onChange={(e) => onChange({ ...value, providerId: e.target.value === 'other' ? null : e.target.value })}
+              onChange={(e) => onChange({ ...value, providerId: e.target.value === 'other' ? null : e.target.value, productId: null, choices: undefined })}
             >
               {telcos.map((t) => (
                 <option key={t.id} value={t.id}>{t.name}</option>
@@ -379,38 +438,118 @@ function BillField({
             </select>
           </label>
           {value.providerId === null && (
-            <label className="block">
-              <span className="label">Hvilket?</span>
+            <label className="block max-w-xs">
+              <span className="label">Hvilket selskab?</span>
               <input className="input" value={value.other ?? ''} onChange={(e) => onChange({ ...value, other: e.target.value })} />
             </label>
           )}
-          <label className="block">
-            <span className="label">Pris pr. måned</span>
-            <input
-              className="input num"
-              type="number"
-              min={0}
-              inputMode="numeric"
-              placeholder="kr."
-              value={value.monthly ?? ''}
-              onChange={(e) => onChange({ ...value, monthly: e.target.value === '' ? null : Number(e.target.value) })}
-            />
-          </label>
-          {binding && (
-            <label className="block">
-              <span className="label">Binding tilbage</span>
-              <select
-                className="input"
-                value={value.bindingLeft ?? 0}
-                onChange={(e) => onChange({ ...value, bindingLeft: Number(e.target.value) })}
-              >
-                <option value={0}>Ingen / ved ikke</option>
-                {[1, 3, 6, 12, 24].map((m) => (
-                  <option key={m} value={m}>{m} mdr.</option>
-                ))}
-              </select>
-            </label>
+
+          {providerPlans.length > 0 && (
+            <div>
+              <span className="label">Hvilket abonnement har du?</span>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {providerPlans.map((p) => {
+                  const sel = value.productId === p.id
+                  const facts = [
+                    p.dataGb != null ? (p.dataGb === -1 ? 'Fri data' : `${p.dataGb} GB`) : null,
+                    p.speedMbit ? `${p.speedMbit} Mbit` : null,
+                    p.bindingMonths ? `${p.bindingMonths} mdr. binding` : null,
+                  ].filter(Boolean)
+                  const extras = p.choose ? `Vælg ${p.choose.count} tjenester` : p.includes.length ? `Med ${p.includes.map(svcName).join(', ')}` : null
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => pickPlan(p)}
+                      aria-pressed={sel}
+                      className={`rounded-xl border px-3 py-2.5 text-left transition ${sel ? 'border-ink bg-sunk' : 'border-line-2 hover:border-ink-3'}`}
+                    >
+                      <span className="flex items-start justify-between gap-3">
+                        <span className="min-w-0 text-[15px] font-medium">{p.name}</span>
+                        <span className="num shrink-0 text-[15px] font-medium">{p.price} kr.</span>
+                      </span>
+                      <span className="mt-0.5 block text-xs text-ink-3">
+                        {[...facts, extras].filter(Boolean).join(' · ')}
+                        {p.introPrice != null && (p.introMonths ?? 0) > 0 && ` · intro ${p.introPrice} kr. i ${p.introMonths} mdr.`}
+                      </span>
+                    </button>
+                  )
+                })}
+                <button
+                  type="button"
+                  onClick={() => pickPlan(null)}
+                  aria-pressed={!value.productId}
+                  className={`rounded-xl border border-dashed px-3 py-2.5 text-left text-[15px] transition ${!value.productId ? 'border-ink bg-sunk' : 'border-line-2 text-ink-2 hover:border-ink-3'}`}
+                >
+                  Et andet / ved ikke
+                  <span className="block text-xs text-ink-3">Skriv selv prisen herunder</span>
+                </button>
+              </div>
+            </div>
           )}
+
+          {plan?.choose && (
+            <div>
+              <span className="label">
+                Hvilke {plan.choose.count} tjenester har du valgt? <span className="font-normal text-ink-3">({(value.choices ?? []).length} af {plan.choose.count})</span>
+              </span>
+              <div className="flex flex-wrap gap-2">
+                {plan.choose.from.map((sid) => {
+                  const svc = services.find((s) => s.id === sid)
+                  if (!svc) return null
+                  const picked = (value.choices ?? []).includes(sid)
+                  return (
+                    <button
+                      key={sid}
+                      type="button"
+                      className="chip"
+                      data-on={picked}
+                      onClick={() => {
+                        const cur = value.choices ?? []
+                        onChange({ ...value, choices: picked ? cur.filter((x) => x !== sid) : [...cur, sid].slice(-plan.choose!.count) })
+                      }}
+                    >
+                      <BrandMark id={sid} name={svc.name} color={svc.color} size={20} />
+                      {svc.name}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+          {plan && (plan.includes.length > 0 || (value.choices ?? []).length > 0) && (
+            <p className="text-sm text-ink-2">
+              {[...plan.includes, ...(value.choices ?? [])].map(svcName).join(', ')} er med i abonnementet. Vi har sat {plan.includes.length + (value.choices ?? []).length === 1 ? 'den' : 'dem'} på listen over,
+              hvad du har.
+            </p>
+          )}
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <label className="block">
+              <span className="label">{plan ? 'Din pris pr. måned' : 'Pris pr. måned'}</span>
+              <input
+                className="input num"
+                type="number"
+                min={0}
+                inputMode="numeric"
+                placeholder="kr."
+                value={value.monthly ?? ''}
+                onChange={(e) => onChange({ ...value, monthly: e.target.value === '' ? null : Number(e.target.value) })}
+              />
+              {plan && <span className="mt-1 block text-xs text-ink-3">Ret den, hvis du har rabat.</span>}
+            </label>
+            {binding && (
+              <label className="block">
+                <span className="label">Binding tilbage</span>
+                <select className="input" value={value.bindingLeft ?? 0} onChange={(e) => onChange({ ...value, bindingLeft: Number(e.target.value) })}>
+                  <option value={0}>Ingen / ved ikke</option>
+                  {[1, 3, 6, 12, 24].map((m) => (
+                    <option key={m} value={m}>{m} mdr.</option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </div>
         </div>
       )}
       {on && children}

@@ -129,6 +129,10 @@ export type Willingness = 'yes' | 'if-worth-it' | 'no'
 
 export interface CurrentBill {
   providerId: string | null
+  /** The plan they have, if they picked it from the catalog. */
+  productId?: string | null
+  /** For plans where you choose N services: the ones they chose. */
+  choices?: string[]
   /** Free text when the provider isn't in the list. */
   other?: string
   monthly: number | null
