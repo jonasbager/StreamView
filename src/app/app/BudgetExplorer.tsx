@@ -254,7 +254,7 @@ export function BudgetExplorer({ ctx, initial }: { ctx: Ctx; initial: FamilySett
             {result.maxRisk !== 'none' ? <RiskPill level={result.maxRisk} /> : <RiskPill level="none" label="Efter reglerne" />}
           </div>
           <button className="btn-primary mt-4 w-full" disabled={opening} onClick={() => startOpen(() => openBoard({ packages: pick.board }))}>
-            {opening ? 'Åbner…' : 'Se og justér pakkerne'}
+            {opening ? 'Åbner…' : 'Brug som opsætning'}
           </button>
           <button
             className="btn-quiet mt-2 w-full"

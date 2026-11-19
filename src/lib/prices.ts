@@ -67,6 +67,8 @@ const extractSchema = z.object({
       dataGb: z.number().nullable().describe('Mobildata i GB, -1 for fri data'),
       speedMbit: z.number().nullable(),
       lines: z.number().int().nullable().describe('Antal mobilabonnementer i pakken'),
+      chooseCount: z.number().int().nullable().describe('Hvis kunden selv vælger N streamingtjenester (fx "2 valgfri tjenester", CBB MIX, Telmore Play, Bland Selv): N. Ellers null'),
+      chooseFromServiceIds: z.array(z.string()).describe('Tjenester man kan vælge imellem, som id fra listen (tom hvis ikke valgfrit)'),
       offerText: z.string().nullable().describe('Kort dansk beskrivelse af et tilbud, hvis der er et'),
       offerEndsAt: z.string().nullable().describe('Slutdato for tilbuddet, YYYY-MM-DD'),
       sourceUrl: z.string(),
@@ -91,6 +93,7 @@ function toProposed(p: z.infer<typeof extractSchema>['products'][number], capaci
       ...(p.dataGb != null ? { dataGb: p.dataGb } : {}),
       ...(p.speedMbit != null ? { speedMbit: p.speedMbit } : {}),
       ...(p.lines != null && p.lines > 1 ? { lines: p.lines } : {}),
+      ...(p.chooseCount && p.chooseFromServiceIds.length ? { choose: { count: p.chooseCount, from: p.chooseFromServiceIds } } : {}),
     },
     offerText: p.offerText,
     offerEndsAt: p.offerEndsAt,
@@ -147,6 +150,9 @@ async function runProvider(provider: Provider, runId: string, serviceIds: string
     system: `Du udtrækker aktuelle danske priser fra udbyderes hjemmesider til en prissammenligning.
 Medtag kun produkter, hvor prisen står på siden. Gæt aldrig en pris. Priser i kr. pr. måned inkl. moms.
 Hvis siden ikke viser priser, så returnér en tom liste.
+Pakker hvor kunden vælger et antal tjenester (fx "+2 valgfri tjenester", CBB MIX, Telmore Play, YouSee Bland Selv) skal have chooseCount og chooseFromServiceIds.
+Et mobil- eller internetabonnement med valgfri tjenester beholder sin kategori (mobile/broadband).
+Medtag ikke rene tilkøb, der kun kan købes oven i et andet abonnement.
 Streamingtjenesternes id'er: ${serviceIds.join(', ')}.`,
     prompt: pages.map((p) => `### ${p.url}\n${p.text}`).join('\n\n'),
   })

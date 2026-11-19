@@ -8,8 +8,8 @@ import { Logo } from './ui'
 export function AppNav({ admin, familyName }: { admin: boolean; familyName?: string }) {
   const path = usePathname()
   const links = [
-    { href: '/app', label: 'Overblik' },
-    { href: '/app/builder', label: 'Pakker' },
+    { href: '/app', label: 'Opsætning' },
+    { href: '/app/udforsk', label: 'Udforsk' },
     { href: '/app/family', label: 'Familie' },
     ...(admin ? [{ href: '/admin', label: 'Priser' }] : []),
   ]

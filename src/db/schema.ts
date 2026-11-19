@@ -61,6 +61,8 @@ export interface ProductAttributes {
   extraMember?: { price: number; slots: number }
   /** A plan that requires a student, a young person or an existing customer. */
   requires?: 'student' | 'youth' | 'customer'
+  /** "Choose N services" packages (CBB MIX, Telmore Play, YouSee Bland Selv): pick `count` of `from`. */
+  choose?: { count: number; from: string[]; capacity?: number }
 }
 
 /** Anything you can pay for: a streaming plan, a mobile plan, broadband, a TV package or a bundle. */

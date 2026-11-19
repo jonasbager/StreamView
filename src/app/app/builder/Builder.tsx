@@ -13,13 +13,13 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from '@dnd-kit/core'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useTransition } from 'react'
 import { BrandMark } from '@/components/BrandMark'
 import { Person, personColor, RiskPill } from '@/components/ui'
-import type { BoardPackage, ProductCategory } from '@/db/schema'
-import { answersOf, Catalog, EXTRA_SUFFIX, evaluate, KEEP_PREFIX, optimise, type Ctx, type Priced } from '@/lib/engine'
+import type { BoardPackage, FamilySettings, ProductCategory } from '@/db/schema'
+import { answersOf, Catalog, EXTRA_SUFFIX, evaluate, KEEP_PREFIX, optimise, suggest, suggestionMeta, type Ctx, type Priced, type Suggestion } from '@/lib/engine'
 import { CATEGORY_DA, kr } from '@/lib/format'
-import { saveBoard } from '../actions'
+import { findAiMoves, saveBoard, saveSettings } from '../actions'
 
 type Drag = { type: 'product'; id: string; from?: string } | { type: 'person'; id: string; from?: string }
 type Tab = 'streaming' | 'bundle' | 'mobile' | 'broadband' | 'tv' | 'current'
@@ -35,9 +35,28 @@ const TABS: { id: Tab; label: string }[] = [
 
 const newId = () => crypto.randomUUID()
 
-export function Builder({ ctx, initial, savedAt }: { ctx: Ctx; initial: BoardPackage[]; savedAt: string | null }) {
+export function Builder({ ctx, initial, today, settings, savedAt }: { ctx: Ctx; initial: BoardPackage[]; today: BoardPackage[]; settings: FamilySettings; savedAt: string | null }) {
   const cat = useMemo(() => new Catalog(ctx), [ctx])
-  const [packages, setPackages] = useState<BoardPackage[]>(initial)
+  const [packages, setPackagesRaw] = useState<BoardPackage[]>(initial)
+  const [history, setHistory] = useState<BoardPackage[][]>([])
+  const [side, setSide] = useState<'ideas' | 'add'>('ideas')
+  const [budget, setBudget] = useState<number | null>(settings.budget)
+  const [ai, setAi] = useState<{ sig: string; list: Suggestion[] } | null>(null)
+  const [aiError, setAiError] = useState(false)
+  const [aiPending, startAi] = useTransition()
+  // Every change goes through here so it can be undone.
+  const setPackages = (next: BoardPackage[] | ((ps: BoardPackage[]) => BoardPackage[])) =>
+    setPackagesRaw((ps) => {
+      const n = typeof next === 'function' ? next(ps) : next
+      if (n !== ps) setHistory((h) => [...h.slice(-30), ps])
+      return n
+    })
+  const undo = () =>
+    setHistory((h) => {
+      if (!h.length) return h
+      setPackagesRaw(h[h.length - 1])
+      return h.slice(0, -1)
+    })
   const [selected, setSelected] = useState<string | null>(initial[0]?.id ?? null)
   const [tab, setTab] = useState<Tab>('streaming')
   const [query, setQuery] = useState('')
@@ -46,6 +65,29 @@ export function Builder({ ctx, initial, savedAt }: { ctx: Ctx; initial: BoardPac
   const first = useRef(true)
 
   const result = useMemo(() => evaluate(cat, packages), [cat, packages])
+  const todayCost = useMemo(() => evaluate(cat, today).monthly, [cat, today])
+  const ideas = useMemo(() => suggest(cat, packages, { adsOk: settings.adsOk, allowBinding: settings.allowBinding }), [cat, packages, settings.adsOk, settings.allowBinding])
+  const sig = suggestionMeta.signature(packages)
+  const aiIdeas = ai && ai.sig === sig ? ai.list : []
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (budget !== settings.budget) saveSettings({ ...settings, budget }).catch(() => {})
+    }, 700)
+    return () => clearTimeout(t)
+  }, [budget]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const askAi = () =>
+    startAi(async () => {
+      setAiError(false)
+      try {
+        const list = await findAiMoves({ packages }, ideas.map((i) => i.title))
+        const known = new Set(ideas.map((i) => i.id.replace(/^ai-/, '')))
+        setAi({ sig, list: list.filter((x) => !known.has(x.id.replace(/^ai-/, ''))) })
+      } catch {
+        setAiError(true)
+      }
+    })
   const memberIdx = useMemo(() => new Map(ctx.members.map((m, i) => [m.id, i])), [ctx.members])
 
   // Autosave
@@ -155,9 +197,7 @@ export function Builder({ ctx, initial, savedAt }: { ctx: Ctx; initial: BoardPac
     return q ? items.filter((i) => `${i.providerName} ${i.name}`.toLowerCase().includes(q)) : items
   }, [ctx, cat, tab, query])
 
-  const reset = (mode: 'legal' | 'bend') => {
-    if (!confirm(mode === 'legal' ? 'Erstat pakkerne med det billigste lovlige forslag?' : 'Erstat pakkerne med forslaget fra den grå zone?')) return
-    const next = optimise(cat, mode, 'high')
+  const resetTo = (next: BoardPackage[]) => {
     setPackages(next)
     setSelected(next[0]?.id ?? null)
   }
@@ -170,27 +210,58 @@ export function Builder({ ctx, initial, savedAt }: { ctx: Ctx; initial: BoardPac
     <DndContext id="package-builder" sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-semibold tracking-tight">Pakker</h1>
+          <h1 className="text-3xl font-semibold tracking-tight">Jeres opsætning</h1>
           <p className="mt-1 max-w-2xl text-ink-2">
-            Her er jeres opsætning delt op i pakker: hvem betaler, hvem bruger den, og hvad der er med. Træk tjenester og personer rundt;
-            prisen og advarslerne opdateres med det samme. Hver linje viser, hvem der har ønsket den.
+            Det her er, hvad I har i dag. Prøv forslagene, eller træk tjenester, mobil og internet rundt, og se med det samme, hvad det
+            betyder for prisen.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm text-ink-3" aria-live="polite">
             {{ saved: 'Gemt', dirty: 'Ikke gemt', saving: 'Gemmer…', error: 'Kunne ikke gemme' }[status]}
           </span>
-          <a href="/app" className="btn-quiet btn-sm">Tilbage til budget</a>
-          <button className="btn-quiet btn-sm" onClick={() => reset('legal')}>Start forfra (alle ønsker)</button>
+          <button className="btn-quiet btn-sm" onClick={undo} disabled={!history.length}>Fortryd</button>
+          <button className="btn-quiet btn-sm" onClick={() => resetTo(today.map((p) => ({ ...p, id: newId() })))}>Tilbage til i dag</button>
+          <button
+            className="btn-quiet btn-sm"
+            title="Den billigste opsætning, der giver alle deres ønsker, efter reglerne"
+            onClick={() => resetTo(optimise(cat, 'legal', 'high', { adsOk: settings.adsOk, allowBinding: settings.allowBinding, switchTelco: settings.switchTelco }))}
+          >
+            Billigst med alle ønsker
+          </button>
         </div>
       </div>
 
       {/* Summary */}
       <div className="card sticky top-[72px] z-30 mb-6 flex flex-wrap items-center gap-x-8 gap-y-3 px-5 py-4 shadow-[0_8px_24px_-16px_rgba(0,0,0,0.25)]">
         <Sum label="Pr. måned" value={kr(result.monthly)} strong />
-        <Sum label="I dag" value={kr(result.current)} />
-        <Sum label={result.saving >= 0 ? 'I sparer' : 'Dyrere med'} value={kr(Math.abs(result.saving))} tone={result.saving >= 0 ? 'brand' : 'risk'} />
+        <Sum label="I dag" value={kr(todayCost)} />
+        <Sum
+          label={todayCost - result.monthly >= 0 ? 'I sparer' : 'Dyrere med'}
+          value={kr(Math.abs(todayCost - result.monthly))}
+          tone={todayCost - result.monthly >= 0 ? 'brand' : 'risk'}
+        />
         <Sum label="Første år" value={kr(result.firstYear)} />
+        <label className="text-xs text-ink-3">
+          Vil højst bruge (valgfrit)
+          <span className="mt-0.5 flex items-center gap-1">
+            <input
+              type="number"
+              min={0}
+              step={50}
+              inputMode="numeric"
+              value={budget ?? ''}
+              placeholder="–"
+              onChange={(e) => setBudget(e.target.value === '' ? null : Number(e.target.value))}
+              className={`num h-8 w-24 rounded-lg border bg-card px-2 text-base font-medium text-ink outline-none focus:border-ink ${budget != null && result.monthly > budget ? 'border-risk' : 'border-line-2'}`}
+            />
+            {budget != null && (
+              <span className={`text-sm ${result.monthly > budget ? 'text-risk' : 'text-brand'}`}>
+                {result.monthly > budget ? `${kr(result.monthly - budget)} over` : `${kr(budget - result.monthly)} tilbage`}
+              </span>
+            )}
+          </span>
+        </label>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {result.maxRisk !== 'none' ? <RiskPill level={result.maxRisk} /> : <RiskPill level="none" label="Efter reglerne" />}
           {missingText.length > 0 && (
@@ -204,6 +275,22 @@ export function Builder({ ctx, initial, savedAt }: { ctx: Ctx; initial: BoardPac
       <div className="grid min-w-0 gap-6 lg:grid-cols-[340px_minmax(0,1fr)]">
         {/* Catalog */}
         <aside className="min-w-0 space-y-4 lg:sticky lg:top-[168px] lg:max-h-[calc(100vh-190px)] lg:overflow-y-auto">
+          <div className="flex rounded-full border border-line-2 bg-sunk p-0.5">
+            {(
+              [
+                ['ideas', `Forslag${ideas.length + aiIdeas.length ? ` (${ideas.length + aiIdeas.length})` : ''}`],
+                ['add', 'Tilføj selv'],
+              ] as const
+            ).map(([k, l]) => (
+              <button key={k} onClick={() => setSide(k)} className={`flex-1 rounded-full px-3 py-1.5 text-sm transition ${side === k ? 'bg-card font-medium shadow-sm' : 'text-ink-2'}`}>
+                {l}
+              </button>
+            ))}
+          </div>
+          {side === 'ideas' && (
+            <Ideas ideas={ideas} aiIdeas={aiIdeas} aiPending={aiPending} aiError={aiError} onAsk={askAi} onApply={(sgg) => setPackages(sgg.board)} />
+          )}
+          {side === 'add' && (<>
           <div className="card p-4">
             <div className="eyebrow mb-3">Personer</div>
             <div className="flex flex-wrap gap-2">
@@ -234,6 +321,7 @@ export function Builder({ ctx, initial, savedAt }: { ctx: Ctx; initial: BoardPac
               {catalogItems.length === 0 && <li className="py-6 text-center text-sm text-ink-3">Intet her.</li>}
             </ul>
           </div>
+          </>)}
         </aside>
 
         {/* Packages */}
@@ -284,6 +372,63 @@ function removeOne(list: string[], id: string) {
   return i === -1 ? list : [...list.slice(0, i), ...list.slice(i + 1)]
 }
 
+function Ideas({ ideas, aiIdeas, aiPending, aiError, onAsk, onApply }: { ideas: Suggestion[]; aiIdeas: Suggestion[]; aiPending: boolean; aiError: boolean; onAsk: () => void; onApply: (s: Suggestion) => void }) {
+  const save = [...aiIdeas.filter((s) => s.group === 'save'), ...ideas.filter((s) => s.group === 'save')].slice(0, 8)
+  const more = [...aiIdeas.filter((s) => s.group === 'more'), ...ideas.filter((s) => s.group === 'more')].sort((a, b) => b.saving - a.saving).slice(0, 5)
+  const bend = ideas.filter((s) => s.group === 'bend').slice(0, 4)
+  const aiIds = new Set(aiIdeas.map((s) => s.id))
+  return (
+    <div className="space-y-4">
+      <IdeaGroup title="Spar penge" empty="Vi kan ikke finde flere besparelser efter reglerne. Prøv AI herunder." list={save} aiIds={aiIds} onApply={onApply} />
+      <div className="card p-4">
+        <button className="btn-quiet btn-sm w-full" onClick={onAsk} disabled={aiPending}>
+          {aiPending ? 'AI leder efter besparelser…' : 'Find flere besparelser med AI'}
+        </button>
+        <p className="mt-2 text-xs text-ink-3">
+          {aiError ? 'AI kunne ikke svare lige nu. Prøv igen.' : 'AI foreslår træk; vi regner prisen ud og viser kun dem, der faktisk sparer.'}
+        </p>
+      </div>
+      {more.length > 0 && <IdeaGroup title="Få flere ønsker opfyldt" list={more} aiIds={aiIds} onApply={onApply} />}
+      {bend.length > 0 && (
+        <IdeaGroup title="Grå zone: del med andre hjem" note="Ikke ulovligt, men imod tjenestens vilkår." list={bend} aiIds={aiIds} onApply={onApply} />
+      )}
+    </div>
+  )
+}
+
+function IdeaGroup({ title, note, empty, list, aiIds, onApply }: { title: string; note?: string; empty?: string; list: Suggestion[]; aiIds: Set<string>; onApply: (s: Suggestion) => void }) {
+  return (
+    <section className="card p-4">
+      <h3 className="font-semibold">{title}</h3>
+      {note && <p className="text-xs text-ink-3">{note}</p>}
+      {list.length === 0 && empty && <p className="mt-2 text-sm text-ink-3">{empty}</p>}
+      <ul className="mt-3 space-y-2">
+        {list.map((s) => (
+          <li key={s.id} className="rounded-xl border border-line p-3">
+            <div className="flex items-start gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="text-[15px] leading-snug font-medium">
+                  {aiIds.has(s.id) && <span className="mr-1.5 rounded bg-sunk px-1.5 py-0.5 align-middle text-[10px] font-semibold text-ink-2">AI</span>}
+                  {s.title}
+                </div>
+                {s.detail && <p className="mt-1 text-xs leading-relaxed text-ink-3">{s.detail}</p>}
+                {s.risk !== 'none' && <div className="mt-2"><RiskPill level={s.risk} /></div>}
+              </div>
+              <div className="shrink-0 text-right">
+                <div className={`num text-sm font-semibold ${s.saving >= 0 ? 'text-brand' : 'text-ink-2'}`}>
+                  {s.saving >= 0 ? `−${kr(s.saving)}` : `+${kr(-s.saving)}`}
+                </div>
+                <div className="text-[11px] text-ink-3">pr. md.</div>
+              </div>
+            </div>
+            <button className="btn-quiet btn-sm mt-2 w-full" onClick={() => onApply(s)}>Prøv det</button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
 function Sum({ label, value, strong, tone }: { label: string; value: string; strong?: boolean; tone?: 'brand' | 'risk' }) {
   return (
     <div>
@@ -310,6 +455,7 @@ function ProductRow({ item, cat, lifted, onAdd, onRemove, who }: { item: Priced;
         <div className="truncate text-[15px] font-medium">{item.name.toLowerCase().startsWith(item.providerName.toLowerCase()) ? item.name : `${item.providerName} ${item.name}`}</div>
         <div className="truncate text-xs text-ink-3">
           {CATEGORY_DA[item.category]}
+          {item.keep ? ' · nuværende' : ''}
           {item.attributes.ads ? ' · reklamer' : ''}
           {item.bindingMonths ? ` · ${item.bindingMonths} mdr. binding` : ''}
           {item.extraFor ? ' · 1 person uden for hjemmet' : ''}
@@ -487,7 +633,7 @@ function PackageCard({
 /** Why an item is in a package: who wanted it, or who it's for. */
 function whoFor(item: Priced, pkg: BoardPackage, ctx: Ctx): { text: string; warn?: boolean } | undefined {
   const name = (id: string) => ctx.members.find((m) => m.id === id)?.name ?? '?'
-  if (item.keep) return { text: `Beholdes af ${name(item.keep.memberId)}` }
+  if (item.keep) return { text: item.monthly === 0 && item.keep.kind === 'streaming' ? `${name(item.keep.memberId)} bruger den gratis` : `${name(item.keep.memberId)} betaler i dag` }
   if (item.category === 'mobile') return { text: 'Mobil til én person i pakken' }
   if (item.category === 'broadband' || item.category === 'tv') return { text: 'Til hele hjemmet' }
   const sids = item.includes.map((i) => i.serviceId)

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Answers, Member, Product } from '@/db/schema'
 import { PRODUCTS, PROVIDERS, SERVICES } from '@/db/seed-data'
-import { Catalog, currentSpend, evaluate, frontier, optimise, pickForBudget } from './engine'
+import { Catalog, currentSpend, evaluate, frontier, optimise, pickForBudget, suggest, todayBoard } from './engine'
 
 const products: Product[] = PRODUCTS.map((p) => ({
   introPrice: null, introMonths: null, setupFee: 0, bindingMonths: 0, includes: [], attributes: {}, offerText: null,
@@ -122,5 +122,34 @@ describe('engine', () => {
     const r = evaluate(cat, optimise(cat, 'legal'))
     expect(r.monthly).toBe(0)
     expect(r.missing).toEqual([])
+  })
+
+  it('suggests upgrading a mobile plan that includes a streaming service, dropping the separate app', () => {
+    const cbbPlus: Product = {
+      ...products.find((p) => p.id === 'cbb-mobil-60')!,
+      id: 'cbb-mix-mobil', name: 'Fri tale + 60 GB + 1 tjeneste', price: 159,
+      attributes: { dataGb: 60, choose: { count: 1, from: ['tv2play', 'netflix', 'hbomax'] } },
+    }
+    const cat = new Catalog({
+      services, providers: PROVIDERS.map((p) => ({ ...p, lastCheckedAt: null })), products: [...products, cbbPlus], households,
+      members: [member('jonas', 'home', { wants: ['tv2play'], paysFor: [{ serviceId: 'tv2play', monthly: 99, via: 'self' }], mobile: { providerId: 'cbb', monthly: 149 } })],
+    })
+    const board = todayBoard(cat)
+    expect(evaluate(cat, board).monthly).toBe(99 + 149)
+    const s = suggest(cat, board).find((x) => x.board.some((p) => p.productIds.includes('cbb-mix-mobil')))!
+    expect(s).toBeTruthy()
+    expect(s.title).toContain('drop TV 2 Play')
+    expect(s.saving).toBe(99 + 149 - 159)
+    expect(evaluate(cat, s.board).missing).toEqual([])
+  })
+
+  it('suggests merging two individual Spotify accounts', () => {
+    const cat = make([
+      member('a', 'home', { wants: ['spotify'], paysFor: [{ serviceId: 'spotify', monthly: 119, productId: 'spotify-individual', via: 'self' }] }),
+      member('b', 'home', { wants: ['spotify'], paysFor: [{ serviceId: 'spotify', monthly: 119, productId: 'spotify-individual', via: 'self' }] }),
+    ])
+    const best = suggest(cat, todayBoard(cat))[0]
+    expect(best.board.flatMap((p) => p.productIds)).toEqual(['spotify-duo'])
+    expect(best.saving).toBe(238 - 159)
   })
 })

@@ -180,7 +180,7 @@ export async function saveSettings(settings: FamilySettings) {
 /** Open the budget setup the family picked in the package builder. */
 export async function openBoard(board: Pick<Board, 'packages'>) {
   await saveBoard(board)
-  redirect('/app/builder')
+  redirect('/app')
 }
 
 /** Plain-Danish explanation of a setup: what changes for whom and what to do. */
@@ -188,4 +188,10 @@ export async function explainBoard(board: Pick<Board, 'packages'>, mode: 'legal'
   const { ctx } = await requireFamily()
   const { explain } = await import('@/lib/recommend')
   return explain(ctx, boardSchema.parse(board).packages, mode)
+}
+
+export async function findAiMoves(board: Pick<Board, 'packages'>, known: string[]) {
+  const { ctx } = await requireFamily()
+  const { aiMoves } = await import('@/lib/recommend')
+  return aiMoves(ctx, boardSchema.parse(board).packages, known.slice(0, 30))
 }

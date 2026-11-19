@@ -3,7 +3,8 @@ import { generateText, Output } from 'ai'
 import { z } from 'zod'
 import type { BoardPackage } from '@/db/schema'
 import { AI_MODEL, aiProviderOptions } from './ai'
-import { answersOf, Catalog, evaluate, KEEP_PREFIX, type Ctx } from './engine'
+import { answersOf, applyMove, Catalog, evaluate, KEEP_PREFIX, suggestionMeta, type Ctx, type Suggestion } from './engine'
+import { ENFORCEMENT_RANK } from './rules'
 
 function describeFamily(ctx: Ctx, cat: Catalog) {
   return ctx.members.map((m) => {
@@ -65,4 +66,68 @@ ${mode === 'bend' ? 'Opsætningen deler nogle logins på tværs af hjem. Nævn �
     }),
   })
   return output
+}
+
+const movesSchema = z.object({
+  moves: z
+    .array(
+      z.object({
+        title: z.string().describe('Kort, konkret forslag på dansk med navne, fx "Opgradér Jonas\' CBB til 100 GB med TV 2 Play og drop den separate TV 2 Play".'),
+        why: z.string().describe('Én sætning: hvorfor det er smart.'),
+        householdId: z.string(),
+        removeIds: z.array(z.string()).describe('Id\'er fra den nuværende opsætning, der skal fjernes'),
+        addIds: z.array(z.string()).describe('Produkt-id\'er fra kataloget, der skal tilføjes'),
+        memberIds: z.array(z.string()).describe('Personer der skal bruge det nye (kan være tom)'),
+      }),
+    )
+    .max(6),
+})
+
+/**
+ * Ask the model for further money-saving moves on the current setup. Every move is
+ * applied and priced by the engine; only real improvements are returned.
+ */
+export async function aiMoves(ctx: Ctx, packages: BoardPackage[], known: string[]): Promise<Suggestion[]> {
+  const cat = new Catalog(ctx)
+  const before = evaluate(cat, packages)
+  const { output } = await generateText({
+    model: AI_MODEL,
+    providerOptions: aiProviderOptions,
+    output: Output.object({ schema: movesSchema }),
+    system: `Du er en skarp dansk rådgiver, der finder besparelser i en families abonnementer (streaming, mobil, internet, TV).
+Find konkrete træk på den NUVÆRENDE opsætning: opgradér/skift et abonnement, så et andet kan droppes; saml abonnementer i en pakke eller familieplan;
+brug mobil- eller internetpakker med inkluderet streaming ("vælg N tjenester"); skift til billigere selskab for dem, der vil skifte.
+Respektér willingToSwitch "no". Del ikke logins på tværs af hjem (det håndteres separat). Brug kun id'er fra opsætningen og kataloget.
+Gentag ikke forslag, der allerede er kendt. Systemet regner prisen ud, så skriv ikke beløb.`,
+    prompt: JSON.stringify({
+      family: describeFamily(ctx, cat).map(({ keepIds: _k, ...rest }) => rest),
+      households: ctx.households.map((h) => ({ id: h.id, name: h.name })),
+      currentSetup: packages.map((p) => ({
+        householdId: p.householdId,
+        users: p.memberIds.map((m) => ctx.members.find((x) => x.id === m)?.name),
+        items: p.productIds.map((id) => {
+          const x = cat.priced(id)
+          return { id, name: x ? `${x.providerName} ${x.name}` : id, monthly: x?.monthly, category: x?.category }
+        }),
+      })),
+      catalog: ctx.products.filter((p) => p.active).map((p) => ({
+        id: p.id, provider: ctx.providers.find((x) => x.id === p.providerId)?.name, name: p.name, category: p.category, price: p.price,
+        includes: p.includes.map((i) => i.serviceId), choose: p.attributes.choose, dataGb: p.attributes.dataGb, speedMbit: p.attributes.speedMbit,
+        bindingMonths: p.bindingMonths || undefined, ads: p.attributes.ads || undefined,
+      })),
+      alreadySuggested: known,
+    }),
+  })
+  const out: Suggestion[] = []
+  for (const m of output.moves) {
+    if (!ctx.households.some((h) => h.id === m.householdId)) continue
+    const { board } = applyMove(cat, packages, m)
+    const after = evaluate(cat, board)
+    const saving = before.monthly - after.monthly
+    const gained = suggestionMeta.coverage(before) - suggestionMeta.coverage(after)
+    if (gained < 0 || ENFORCEMENT_RANK[after.maxRisk] > ENFORCEMENT_RANK[before.maxRisk]) continue
+    if (saving < 5 && gained <= 0) continue
+    out.push({ id: `ai-${suggestionMeta.signature(board)}`, group: gained > 0 && saving < 0 ? 'more' : 'save', title: m.title, detail: m.why, saving, gained, risk: after.maxRisk, board })
+  }
+  return out
 }

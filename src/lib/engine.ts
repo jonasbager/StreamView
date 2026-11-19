@@ -126,8 +126,8 @@ export class Catalog {
       const other = pay.via === 'other'
       const monthly = other ? 0 : pay.monthly ?? this.planPrice(pay.productId) ?? this.cheapestPrice(svc.id)
       return {
-        id, name: other ? 'Betales af en anden' : 'Nuværende abonnement', providerName: svc.name, logoId: svc.id, category: 'streaming', monthly, firstYear: monthly * 12,
-        bindingMonths: 0, includes: [{ serviceId: svc.id, capacity: svc.capacityType === 'seats' ? 1 : 2 }], attributes: {}, verified: true,
+        id, name: other ? 'Betales af en anden' : (pay.productId ? this.product.get(pay.productId)?.name : undefined) ?? 'Abonnement', providerName: svc.name, logoId: svc.id, category: 'streaming', monthly, firstYear: monthly * 12,
+        bindingMonths: 0, includes: this.currentPlanIncludes(svc, pay.productId, pay.monthly), attributes: {}, verified: true,
         keep: { memberId, kind, serviceId },
       }
     }
@@ -140,11 +140,26 @@ export class Catalog {
     const homeMembers = kind === 'mobile' ? [m] : this.ctx.members.filter((x) => x.householdId === m.householdId)
     const included = [...new Set(homeMembers.flatMap((x) => answersOf(x).paysFor.filter((p) => p.via === kind).map((p) => p.serviceId)))]
     return {
-      id, name: `${label} (nuværende)${bill.monthly == null ? ', anslået pris' : ''}`, providerName, providerId: bill.providerId ?? undefined, logoId: bill.providerId ?? undefined,
+      id, name: `${label}${bill.monthly == null ? ' (anslået pris)' : ''}`, providerName, providerId: bill.providerId ?? undefined, logoId: bill.providerId ?? undefined,
       category: kind, monthly, firstYear: monthly * 12, bindingMonths: bill.bindingLeft ?? 0,
       includes: included.map((sid) => ({ serviceId: sid, capacity: this.service.get(sid)?.capacityType === 'seats' ? homeMembers.length : 2 })),
       attributes: {}, verified: true, keep: { memberId, kind },
     }
+  }
+
+  /**
+   * What a current subscription covers: the plan's contents if we know the plan,
+   * else the plan of that service whose price is closest to what they pay
+   * (so 449 kr. for Viaplay counts as the sport package, not Film & Serier).
+   */
+  currentPlanIncludes(svc: Service, productId: string | null | undefined, monthly: number | null) {
+    const base = [{ serviceId: svc.id, capacity: svc.capacityType === 'seats' ? 1 : 2 }]
+    const known = productId ? this.product.get(productId) : undefined
+    if (known?.includes.length) return known.includes
+    if (monthly == null) return base
+    const plans = this.ctx.products.filter((p) => p.active && p.category === 'streaming' && p.includes.some((i) => i.serviceId === svc.id) && !p.attributes.requires)
+    const closest = plans.sort((a, b) => Math.abs(a.price - monthly) - Math.abs(b.price - monthly))[0]
+    return closest && Math.abs(closest.price - monthly) <= Math.max(20, monthly * 0.15) ? closest.includes : base
   }
 
   planPrice(productId: string | null | undefined) {
@@ -177,6 +192,8 @@ export interface PackageResult {
   risk: Enforcement
   riskyServices: string[]
   warnings: PackageWarning[]
+  /** For "choose N" items: which services they were used for. */
+  chosen: Record<string, string[]>
 }
 
 export interface BoardResult {
@@ -206,6 +223,7 @@ export function evaluate(cat: Catalog, packages: BoardPackage[]): BoardResult {
   const results: PackageResult[] = []
 
   for (const pkg of packages) {
+    const chosen = new Map<string, string[]>()
     const items = pkg.productIds.map((id) => cat.priced(id)).filter((x): x is Priced => !!x)
     const users = pkg.memberIds.filter((id) => memberById.has(id))
     const homes = new Set(users.map((id) => memberById.get(id)!.householdId))
@@ -216,6 +234,21 @@ export function evaluate(cat: Catalog, packages: BoardPackage[]): BoardResult {
     // Capacity per service across the package's items.
     const capacity = new Map<string, number>()
     for (const it of items) for (const inc of it.includes) capacity.set(inc.serviceId, (capacity.get(inc.serviceId) ?? 0) + inc.capacity)
+    // "Choose N" packages fill in with what the package's users want, uncovered services first.
+    for (const it of items) {
+      const ch = it.attributes.choose
+      if (!ch) continue
+      const demandOf = (sid: string) => users.filter((u) => answersOf(memberById.get(u)!).wants.includes(sid)).length
+      const picks = ch.from
+        .filter((sid) => demandOf(sid) > 0)
+        .sort((a, b) => Number(capacity.has(a)) - Number(capacity.has(b)) || demandOf(b) - demandOf(a))
+        .slice(0, ch.count)
+      for (const sid of picks) {
+        const cap = ch.capacity ?? (cat.service.get(sid)?.capacityType === 'seats' ? 1 : 2)
+        capacity.set(sid, (capacity.get(sid) ?? 0) + cap)
+      }
+      chosen.set(it.id, picks)
+    }
     const services = [...capacity.keys()]
 
     const riskyServices: string[] = []
@@ -273,6 +306,7 @@ export function evaluate(cat: Catalog, packages: BoardPackage[]): BoardResult {
       risk,
       riskyServices,
       warnings,
+      chosen: Object.fromEntries(chosen),
     })
   }
 
@@ -366,7 +400,7 @@ function solve(unit: Unit, options: Option[], cat: Catalog, concurrency: number,
   if (n === 0) return [] as { option: Option; copies: number; services: string[] }[]
   const idx = new Map(needed.map((s, i) => [s, i]))
   const cands: { option: Option; mask: number; copies: number; cost: number }[] = []
-  for (const o of options) {
+  for (const o of expandChoose(options, needed)) {
     if (!allowed(o)) continue
     let mask = 0
     let copies = 0
@@ -409,6 +443,34 @@ function solve(unit: Unit, options: Option[], cat: Catalog, concurrency: number,
     out.push({ option: c.option, copies: c.copies, services: needed.filter((_, i) => (newly >> i) & 1) })
   }
   return out
+}
+
+/** Turn "choose N of these" products into concrete options for the services this unit needs. */
+function expandChoose(options: Option[], needed: string[]): Option[] {
+  const out: Option[] = []
+  for (const o of options) {
+    const ch = o.product.attributes.choose
+    if (!ch) {
+      out.push(o)
+      continue
+    }
+    const relevant = ch.from.filter((s) => needed.includes(s))
+    if (!relevant.length) continue
+    const combos = relevant.length <= ch.count ? [relevant] : combinations(relevant, ch.count).slice(0, 40)
+    for (const combo of combos) {
+      const capacity = new Map(o.capacity)
+      for (const sid of combo) capacity.set(sid, ch.capacity ?? 2)
+      out.push({ ...o, capacity })
+    }
+  }
+  return out
+}
+
+function combinations<T>(arr: T[], k: number): T[][] {
+  if (k === 0) return [[]]
+  if (arr.length < k) return []
+  const [head, ...rest] = arr
+  return [...combinations(rest, k - 1).map((c) => [head, ...c]), ...combinations(rest, k)]
 }
 
 const bits = (x: number) => {
@@ -500,7 +562,7 @@ export function optimise(cat: Catalog, mode: 'legal' | 'bend', tolerance: Enforc
     const answers = unitMembers.map((id) => answersOf(memberById.get(id)!))
     const allStudents = answers.length === 1 && answers[0].student
     return cat.ctx.products
-      .filter((p) => p.active && (p.category === 'streaming' || p.category === 'bundle') && p.includes.length)
+      .filter((p) => p.active && (p.category === 'streaming' || p.category === 'bundle') && (p.includes.length || p.attributes.choose))
       .filter((p) => (adsOk || !p.attributes.ads) && okBinding(p))
       .filter((p) => !p.attributes.requires || (p.attributes.requires === 'student' && allStudents))
       .map((p) => ({ id: p.id, price: p.price, capacity: new Map(p.includes.map((i) => [i.serviceId, i.capacity])), product: p }))
@@ -729,3 +791,248 @@ function mergeByHome(cat: Catalog, packages: BoardPackage[], label: (hid: string
   }
   return out
 }
+
+// ---------------------------------------------------------------------------
+// Today's setup and concrete suggestions
+// ---------------------------------------------------------------------------
+
+/** The family's setup as it is today, built from everyone's answers. */
+export function todayBoard(cat: Catalog): BoardPackage[] {
+  const out: BoardPackage[] = []
+  for (const h of cat.ctx.households) {
+    const home = cat.ctx.members.filter((m) => m.householdId === h.id && m.answers)
+    const ids: string[] = []
+    for (const m of home) {
+      const a = answersOf(m)
+      for (const p of a.paysFor) if ((p.via ?? 'self') === 'self' || p.via === 'other') ids.push(`${KEEP_PREFIX}streaming:${m.id}:${p.serviceId}`)
+      if (a.mobile) ids.push(`${KEEP_PREFIX}mobile:${m.id}`)
+    }
+    const bb = home.find((m) => answersOf(m).broadband)
+    if (bb) ids.push(`${KEEP_PREFIX}broadband:${bb.id}`)
+    const tv = home.find((m) => answersOf(m).tv)
+    if (tv) ids.push(`${KEEP_PREFIX}tv:${tv.id}`)
+    if (ids.length) out.push({ id: `today-${h.id}`, name: h.name, householdId: h.id, productIds: ids, memberIds: home.map((m) => m.id) })
+  }
+  return out
+}
+
+export interface Suggestion {
+  id: string
+  group: 'save' | 'more' | 'bend'
+  title: string
+  detail: string
+  /** Monthly saving (negative = costs more). */
+  saving: number
+  /** Wishes covered after minus before. */
+  gained: number
+  risk: Enforcement
+  board: BoardPackage[]
+}
+
+const clone = (b: BoardPackage[]) => b.map((p) => ({ ...p, productIds: [...p.productIds], memberIds: [...p.memberIds] }))
+const signature = (b: BoardPackage[]) => b.map((p) => `${p.householdId}:${[...p.productIds].sort().join(',')}:${[...p.memberIds].sort().join(',')}`).sort().join('|')
+const coverage = (r: BoardResult) => r.missing.length + r.missingTelco.length
+const capacityWarnings = (r: BoardResult) => r.packages.reduce((n, p) => n + p.warnings.filter((w) => w.level === 'warn').length, 0)
+
+/** Remove items that add nothing (their services are covered elsewhere), most expensive first. */
+function prune(cat: Catalog, board: BoardPackage[], homeId: string | null, protect: Set<string>) {
+  const removed: string[] = []
+  let base = evaluate(cat, board)
+  const candidates = board
+    .flatMap((p, pi) => p.productIds.map((id, ii) => ({ pi, ii, id, item: cat.priced(id) })))
+    .filter((c) => c.item && (homeId == null || board[c.pi].householdId === homeId) && !protect.has(c.id))
+    .filter((c) => c.item!.category === 'streaming' || c.item!.category === 'bundle')
+    .sort((a, b) => b.item!.monthly - a.item!.monthly)
+  for (const c of candidates) {
+    const pkg = board[c.pi]
+    const at = pkg.productIds.indexOf(c.id)
+    if (at === -1) continue
+    pkg.productIds.splice(at, 1)
+    const r = evaluate(cat, board)
+    if (coverage(r) <= coverage(base) && capacityWarnings(r) <= capacityWarnings(base)) {
+      removed.push(c.id)
+      base = r
+    } else pkg.productIds.splice(at, 0, c.id)
+  }
+  return removed
+}
+
+export interface SuggestOptions {
+  adsOk?: boolean
+  allowBinding?: boolean
+}
+
+/**
+ * Concrete moves on the current setup, each priced by the engine:
+ * replace an item (and drop what it makes redundant), drop unused items,
+ * add a missing wish, and share across homes (grey zone, separate group).
+ */
+export function suggest(cat: Catalog, board: BoardPackage[], opts: SuggestOptions = {}): Suggestion[] {
+  const { adsOk = true, allowBinding = true } = opts
+  const memberById = new Map(cat.ctx.members.map((m) => [m.id, m]))
+  const before = evaluate(cat, board)
+  const out = new Map<string, Suggestion>()
+  const nameOf = (id: string) => memberById.get(id)?.name ?? '?'
+  const itemLabel = (it: Priced) => (it.keep ? `${it.keep.kind === 'streaming' ? it.providerName : it.name.replace(' (anslået pris)', '')}${it.keep.kind !== 'streaming' ? ` hos ${it.providerName}` : ''}` : `${it.name.toLowerCase().startsWith(it.providerName.toLowerCase()) ? it.name : `${it.providerName} ${it.name}`}`)
+  const owner = (it: Priced) => (it.keep ? `${nameOf(it.keep.memberId)}s ` : '')
+  const allowed = (p: Product) => p.active && (adsOk || !p.attributes.ads) && (allowBinding || p.bindingMonths === 0)
+
+  const add = (s: Omit<Suggestion, 'id' | 'risk' | 'saving' | 'gained'> & { slot?: string }, after: BoardResult) => {
+    const saving = before.monthly - after.monthly
+    const gained = coverage(before) - coverage(after)
+    const risk = after.maxRisk
+    if (s.group !== 'bend' && ENFORCEMENT_RANK[risk] > ENFORCEMENT_RANK[before.maxRisk]) return
+    if (gained < 0) return
+    if (s.group === 'save' && saving < 5) return
+    // One suggestion per replaced item (the best), and never two with the same title.
+    const key = s.slot ?? s.title
+    const prev = out.get(key)
+    const { slot: _slot, ...rest } = s
+    if (!prev || saving > prev.saving) out.set(key, { ...rest, id: signature(s.board), saving, gained, risk })
+  }
+
+  // 1) Replace an item with something else, then drop what became redundant.
+  for (const [pi, pkg] of board.entries()) {
+    for (const [ii, id] of pkg.productIds.entries()) {
+      const it = cat.priced(id)
+      if (!it) continue
+      const who = it.keep ? memberById.get(it.keep.memberId) : undefined
+      const a = who ? answersOf(who) : undefined
+      if (a?.willingToSwitch === 'no') continue
+      if (it.keep?.kind === 'broadband' && (a?.broadband?.bindingLeft ?? 0) > 0) continue
+      if (it.keep?.kind === 'tv') continue
+      const sids = it.includes.map((i) => i.serviceId)
+      // What could become redundant in this home if the new product covers more.
+      const homeStreaming = board.filter((p) => p.householdId === pkg.householdId).flatMap((p) => p.productIds).map((x) => cat.priced(x)).filter((x): x is Priced => !!x && (x.category === 'streaming' || x.category === 'bundle'))
+      const budgetCap = it.monthly + homeStreaming.reduce((n, x) => n + x.monthly, 0)
+      const minData = a ? (a.dataNeed === 'low' ? 0 : a.dataNeed === 'mid' ? 30 : 100) : 0
+      const candidates = cat.ctx.products.filter((p) => {
+        if (!allowed(p) || p.id === id || p.price >= budgetCap) return false
+        if (p.attributes.requires === 'student' && !pkg.memberIds.every((m) => answersOf(memberById.get(m)!).student)) return false
+        if (it.category === 'mobile') return p.category === 'mobile' && (p.attributes.lines ?? 1) === 1 && ((p.attributes.dataGb ?? 0) === -1 || (p.attributes.dataGb ?? 0) >= minData)
+        if (it.category === 'broadband') return p.category === 'broadband' && (p.attributes.speedMbit ?? 0) >= 500
+        if (it.category === 'streaming' || it.category === 'bundle') {
+          if (p.category !== 'streaming' && p.category !== 'bundle') return false
+          const covers = new Set([...p.includes.map((x) => x.serviceId), ...(p.attributes.choose?.from ?? [])])
+          return sids.every((s) => covers.has(s))
+        }
+        return false
+      })
+      for (const p of candidates) {
+        const next = clone(board)
+        next[pi].productIds[ii] = p.id
+        const removed = prune(cat, next, pkg.householdId, new Set([p.id]))
+        const after = evaluate(cat, next)
+        const np = cat.priced(p.id)!
+        const dropped = removed.map((x) => cat.priced(x)).filter((x): x is Priced => !!x).map(itemLabel)
+        const extra = np.attributes.choose ? after.packages[pi]?.chosen[p.id] : undefined
+        add(
+          {
+            group: 'save',
+            slot: `replace:${pi}:${ii}:${dropped.length}`,
+            title: `Skift ${owner(it)}${itemLabel(it)} til ${itemLabel(np)}${dropped.length ? ` og drop ${dropped.join(' og ')}` : ''}`,
+            detail: [
+              extra?.length ? `Inkluderer ${extra.map((s) => cat.service.get(s)?.name).join(', ')}.` : '',
+              np.bindingMonths ? `${np.bindingMonths} mdr. binding.` : '',
+              !np.verified ? 'Prisen er ikke bekræftet.' : '',
+            ].filter(Boolean).join(' '),
+            board: next,
+          },
+          after,
+        )
+      }
+    }
+  }
+
+  // 2) Drop items nobody uses.
+  {
+    const next = clone(board)
+    const removed = prune(cat, next, null, new Set())
+    if (removed.length) {
+      add({ group: 'save', title: `Drop ${removed.map((x) => itemLabel(cat.priced(x)!)).join(' og ')}`, detail: 'Ingen har ønsket den, eller den er allerede dækket af noget andet.', board: next }, evaluate(cat, next))
+    }
+  }
+
+  // 3) Add a missing wish the cheapest way.
+  for (const miss of before.missing) {
+    const m = memberById.get(miss.memberId)!
+    const pi = board.findIndex((p) => p.householdId === m.householdId && p.memberIds.includes(m.id))
+    const options = cat.ctx.products
+      .filter((p) => allowed(p) && (p.category === 'streaming' || p.category === 'bundle') && (p.includes.some((i) => i.serviceId === miss.serviceId) || p.attributes.choose?.from.includes(miss.serviceId)))
+      .filter((p) => !p.attributes.requires || answersOf(m).student)
+      .sort((a, b) => a.price - b.price)
+      .slice(0, 3)
+    for (const p of options) {
+      const next = clone(board)
+      if (pi >= 0) next[pi].productIds.push(p.id)
+      else next.push({ id: `p-${m.id}-${p.id}`, name: cat.ctx.households.find((h) => h.id === m.householdId)?.name ?? 'Hjem', householdId: m.householdId, productIds: [p.id], memberIds: [m.id] })
+      const target = pi >= 0 ? next[pi] : next[next.length - 1]
+      if (!target.memberIds.includes(m.id)) target.memberIds.push(m.id)
+      prune(cat, next, m.householdId, new Set([p.id]))
+      const svc = cat.service.get(miss.serviceId)?.name
+      add({ group: 'more', slot: `add:${m.id}:${miss.serviceId}`, title: `Få ${svc} til ${m.name}`, detail: `Med ${itemLabel(cat.priced(p.id)!)}.`, board: next }, evaluate(cat, next))
+    }
+  }
+
+  // 4) Use a service another home already pays for: official extra member, or sharing (grey zone).
+  for (const [ai, host] of board.entries()) {
+    for (const hostId of new Set(host.productIds)) {
+      const hp = cat.priced(hostId)
+      if (!hp || hp.category !== 'streaming') continue
+      const sid = hp.includes[0]?.serviceId
+      const svc = sid ? cat.service.get(sid) : undefined
+      if (!svc) continue
+      for (const [bi, guest] of board.entries()) {
+        if (bi === ai || guest.householdId === host.householdId) continue
+        const guests = guest.memberIds.filter((u) => answersOf(memberById.get(u)!).wants.includes(sid))
+        if (!guests.length) continue
+        const next = clone(board)
+        next[ai].memberIds.push(...guests.filter((g) => !next[ai].memberIds.includes(g)))
+        const product = cat.product.get(hostId)
+        const legal = !!product?.attributes.extraMember && guests.length <= product.attributes.extraMember.slots
+        if (legal) for (let i = 0; i < guests.length; i++) next[ai].productIds.push(`${hostId}${EXTRA_SUFFIX}`)
+        prune(cat, next, guest.householdId, new Set())
+        const homeA = cat.ctx.households.find((h) => h.id === host.householdId)?.name
+        const homeB = cat.ctx.households.find((h) => h.id === guest.householdId)?.name
+        add(
+          {
+            group: legal || !svc.sharing.householdOnly ? 'save' : 'bend',
+            title: legal ? `Gør ${guests.map(nameOf).join(' og ')} til ekstra medlem på ${homeA}s ${svc.name}` : `Del ${svc.name} mellem ${homeA} og ${homeB}`,
+            detail: legal ? 'Officielt ekstra medlem: eget login, helt efter reglerne.' : svc.sharing.howEnforced,
+            board: next,
+          },
+          evaluate(cat, next),
+        )
+      }
+    }
+  }
+
+  // Titles must be unique across slots too.
+  const byTitle = new Map<string, Suggestion>()
+  for (const x of out.values()) if (!byTitle.has(x.title) || x.saving > byTitle.get(x.title)!.saving) byTitle.set(x.title, x)
+  return [...byTitle.values()].sort((a, b) => b.saving - a.saving)
+}
+
+/** Apply a remove/add move to a home's packages, prune what became redundant, and price it. */
+export function applyMove(cat: Catalog, board: BoardPackage[], move: { householdId: string; removeIds: string[]; addIds: string[]; memberIds?: string[] }) {
+  const next = clone(board)
+  const home = next.filter((p) => p.householdId === move.householdId)
+  for (const id of move.removeIds) {
+    const pkg = [...home, ...next].find((p) => p.productIds.includes(id))
+    if (pkg) pkg.productIds.splice(pkg.productIds.indexOf(id), 1)
+  }
+  const valid = move.addIds.filter((id) => cat.priced(id))
+  let target = home[0]
+  if (!target && valid.length) {
+    target = { id: `p-${move.householdId}-${valid[0]}`, name: cat.ctx.households.find((h) => h.id === move.householdId)?.name ?? 'Hjem', householdId: move.householdId, productIds: [], memberIds: [] }
+    next.push(target)
+  }
+  if (target) {
+    target.productIds.push(...valid)
+    for (const m of move.memberIds ?? []) if (!target.memberIds.includes(m) && cat.ctx.members.some((x) => x.id === m)) target.memberIds.push(m)
+  }
+  const pruned = prune(cat, next, move.householdId, new Set(valid))
+  return { board: next.filter((p) => p.productIds.length || p.memberIds.length), pruned }
+}
+
+export const suggestionMeta = { coverage, signature }

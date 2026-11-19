@@ -7,6 +7,8 @@ export async function GET(req: Request) {
   if (req.headers.get('authorization') !== `Bearer ${process.env.CRON_SECRET}`) {
     return new Response('Unauthorized', { status: 401 })
   }
-  const result = await runPriceJob('cron')
+  // ?providers=cbb,telmore re-checks specific providers now.
+  const only = new URL(req.url).searchParams.get('providers')?.split(',').filter(Boolean)
+  const result = await runPriceJob(only?.length ? 'manual' : 'cron', only)
   return Response.json(result)
 }
