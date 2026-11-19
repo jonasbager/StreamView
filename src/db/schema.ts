@@ -3,7 +3,7 @@ import { boolean, integer, jsonb, pgTable, real, text, timestamp } from 'drizzle
 import type { Enforcement } from '@/lib/rules'
 export type { Enforcement } from '@/lib/rules'
 export { ENFORCEMENT_RANK } from '@/lib/rules'
-export type ServiceCategory = 'video' | 'sport' | 'music' | 'free'
+export type ServiceCategory = 'video' | 'sport' | 'music' | 'audio' | 'free'
 export type ProductCategory = 'streaming' | 'mobile' | 'broadband' | 'tv' | 'bundle'
 
 export interface SharingRules {

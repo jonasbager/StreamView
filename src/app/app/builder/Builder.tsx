@@ -18,15 +18,16 @@ import { BrandMark } from '@/components/BrandMark'
 import { ProductDetails } from '@/components/ProductDetails'
 import { Person, personColor, RiskPill } from '@/components/ui'
 import type { BoardPackage, FamilySettings, ProductCategory } from '@/db/schema'
-import { answersOf, Catalog, EXTRA_SUFFIX, evaluate, KEEP_PREFIX, optimise, suggest, suggestionMeta, type Ctx, type Priced, type Suggestion } from '@/lib/engine'
+import { answersOf, Catalog, EXTRA_SUFFIX, evaluate, KEEP_PREFIX, optimise, suggest, suggestionMeta, withChoices, type Ctx, type Priced, type Suggestion } from '@/lib/engine'
 import { CATEGORY_DA, kr } from '@/lib/format'
 import { findAiMoves, saveBoard, saveSettings } from '../actions'
 
 type Drag = { type: 'product'; id: string; from?: string } | { type: 'person'; id: string; from?: string }
-type Tab = 'streaming' | 'bundle' | 'mobile' | 'broadband' | 'tv' | 'current'
+type Tab = 'streaming' | 'audio' | 'bundle' | 'mobile' | 'broadband' | 'tv' | 'current'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'streaming', label: 'Streaming' },
+  { id: 'audio', label: 'Lyd' },
   { id: 'bundle', label: 'Pakker' },
   { id: 'mobile', label: 'Mobil' },
   { id: 'broadband', label: 'Internet' },
@@ -186,8 +187,9 @@ export function Builder({ ctx, initial, today, settings, savedAt }: { ctx: Ctx; 
         return ids.map((id) => cat.priced(id)).filter((x): x is Priced => !!x).map((x) => ({ ...x, name: `${m.name}: ${x.name}` }))
       })
     } else {
+      const isAudio = (p: (typeof ctx.products)[number]) => p.includes.length > 0 && p.includes.every((i) => cat.service.get(i.serviceId)?.category === 'audio')
       items = ctx.products
-        .filter((p) => p.category === (tab as ProductCategory))
+        .filter((p) => (tab === 'audio' ? p.category === 'streaming' && isAudio(p) : p.category === (tab as ProductCategory) && !(tab === 'streaming' && isAudio(p))))
         .flatMap((p) => {
           const main = cat.priced(p.id)
           const extra = p.attributes.extraMember ? cat.priced(`${p.id}${EXTRA_SUFFIX}`) : null
@@ -446,7 +448,7 @@ function serviceColor(it: Priced, cat: Catalog) {
   return (sid && cat.service.get(sid)?.color) || cat.ctx.providers.find((p) => p.name === it.providerName)?.color || '#5d5a54'
 }
 
-function ProductRow({ item, cat, lifted, onAdd, onRemove, who, usedFor }: { item: Priced; cat: Catalog; lifted?: boolean; onAdd?: () => void; onRemove?: () => void; who?: { text: string; warn?: boolean }; usedFor?: string[] }) {
+function ProductRow({ item, cat, lifted, onAdd, onRemove, who, usedFor, onChoose }: { item: Priced; cat: Catalog; lifted?: boolean; onAdd?: () => void; onRemove?: () => void; who?: { text: string; warn?: boolean }; usedFor?: string[]; onChoose?: (services: string[]) => void }) {
   const [open, setOpen] = useState(false)
   const title = item.name.toLowerCase().startsWith(item.providerName.toLowerCase()) ? item.name : `${item.providerName} ${item.name}`
   const includesText = item.attributes.choose
@@ -483,6 +485,9 @@ function ProductRow({ item, cat, lifted, onAdd, onRemove, who, usedFor }: { item
           </button>
         )}
       </div>
+      {onChoose && item.attributes.choose && !lifted && (
+        <ChoicePicker item={item} cat={cat} auto={usedFor ?? []} onChoose={onChoose} />
+      )}
       {!lifted && (
         <button
           type="button"
@@ -498,14 +503,14 @@ function ProductRow({ item, cat, lifted, onAdd, onRemove, who, usedFor }: { item
   )
 }
 
-function DraggableProduct({ uid, item, cat, onAdd, from, onRemove, who, usedFor }: { uid: string; item: Priced; cat: Catalog; onAdd?: () => void; from?: string; onRemove?: () => void; who?: { text: string; warn?: boolean }; usedFor?: string[] }) {
+function DraggableProduct({ uid, item, cat, onAdd, from, onRemove, who, usedFor, onChoose }: { uid: string; item: Priced; cat: Catalog; onAdd?: () => void; from?: string; onRemove?: () => void; who?: { text: string; warn?: boolean }; usedFor?: string[]; onChoose?: (services: string[]) => void }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `product:${from ?? 'catalog'}:${uid}`,
     data: { type: 'product', id: item.id, from } satisfies Drag,
   })
   return (
     <div ref={setNodeRef} {...listeners} {...attributes} className={`touch-manipulation cursor-grab active:cursor-grabbing ${isDragging ? 'opacity-30' : ''}`}>
-      <ProductRow item={item} cat={cat} onAdd={onAdd} onRemove={onRemove} who={who} usedFor={usedFor} />
+      <ProductRow item={item} cat={cat} onAdd={onAdd} onRemove={onRemove} who={who} usedFor={usedFor} onChoose={onChoose} />
     </div>
   )
 }
@@ -556,7 +561,7 @@ function PackageCard({
   onDelete: () => void
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: pkg.id })
-  const items = pkg.productIds.map((id, i) => ({ key: `${id}-${i}`, id, item: cat.priced(id) }))
+  const items = pkg.productIds.map((id, i) => ({ key: `${id.split('@')[0]}-${i}`, id, index: i, item: cat.priced(id) }))
   return (
     <div
       ref={setNodeRef}
@@ -611,13 +616,14 @@ function PackageCard({
       </div>
 
       <div className="mt-3 space-y-1.5">
-        {items.map(({ key, id, item }) =>
+        {items.map(({ key, id, index, item }) =>
           item ? (
             <DraggableProduct
               key={key}
               uid={key}
               who={whoFor(item, pkg, ctx)}
               usedFor={result?.chosen[id]}
+              onChoose={(services) => onChange((p) => ({ ...p, productIds: p.productIds.map((x, j) => (j === index ? withChoices(x, services) : x)) }))}
               item={item}
               cat={cat}
               from={pkg.id}
@@ -647,6 +653,54 @@ function PackageCard({
       )}
 
       <button onClick={onDelete} className="mt-4 self-start text-sm text-ink-3 hover:text-risk">Slet pakke</button>
+    </div>
+  )
+}
+
+/** Pick which services a "choose N" package (CBB MIX, Telmore Play …) is used for. */
+function ChoicePicker({ item, cat, auto, onChoose }: { item: Priced; cat: Catalog; auto: string[]; onChoose: (services: string[]) => void }) {
+  const ch = item.attributes.choose!
+  const mine = item.selected
+  const current = mine ?? auto
+  const toggle = (sid: string) => {
+    const base = mine ?? auto
+    // When all slots are taken, a new pick replaces the oldest one.
+    const next = base.includes(sid) ? base.filter((x) => x !== sid) : [...base, sid].slice(-ch.count)
+    onChoose(next)
+  }
+  return (
+    <div className="mt-2 rounded-lg border border-line px-2.5 py-2" onPointerDown={(e) => e.stopPropagation()}>
+      <div className="mb-1.5 flex items-center justify-between gap-2 text-xs">
+        <span className="font-medium text-ink">
+          {mine ? `Jeres valg: ${mine.length} af ${ch.count}` : `Vælg ${ch.count} tjenester`}
+        </span>
+        {mine ? (
+          <button className="text-ink-3 hover:text-ink" onClick={() => onChoose([])}>Vælg automatisk</button>
+        ) : (
+          <span className="text-ink-3">{auto.length ? 'Forslag ud fra jeres ønsker' : 'Ingen valgt'}</span>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {ch.from.map((sid) => {
+          const s = cat.service.get(sid)
+          if (!s) return null
+          const on = current.includes(sid)
+          return (
+            <button
+              key={sid}
+              type="button"
+              onClick={() => toggle(sid)}
+              aria-pressed={on}
+              className={`inline-flex items-center gap-1.5 rounded-full border py-0.5 pr-2.5 pl-0.5 text-xs transition ${
+                on ? (mine ? 'border-ink bg-ink text-paper' : 'border-dashed border-ink-3 bg-sunk text-ink') : 'border-line-2 text-ink-2 hover:border-ink-3'
+              }`}
+            >
+              <BrandMark id={sid} name={s.name} color={s.color} size={18} />
+              {s.name}
+            </button>
+          )
+        })}
+      </div>
     </div>
   )
 }

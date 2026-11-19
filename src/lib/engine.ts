@@ -45,11 +45,17 @@ export interface Priced {
   /** An official extra-member slot for this service (allows one person outside the home). */
   extraFor?: string
   offerText?: string | null
+  /** For "choose N" products: the services the family picked (undefined = pick automatically). */
+  selected?: string[]
   /** Details for the "what's included" fold-out. */
   info?: { price: number; introPrice: number | null; introMonths: number | null; setupFee: number; sourceUrl: string | null; verifiedAt: string | null; offerEndsAt: string | null }
 }
 
 export type KeepKind = 'mobile' | 'broadband' | 'tv' | 'streaming'
+/** Separates a product id from the services picked in it. */
+export const CHOICE_SEP = '@'
+export const withChoices = (productId: string, services: string[]) =>
+  services.length ? `${productId.split(CHOICE_SEP)[0]}${CHOICE_SEP}${services.join('+')}` : productId.split(CHOICE_SEP)[0]
 export const EXTRA_SUFFIX = '#extra'
 
 export function firstYear(p: Pick<Product, 'price' | 'introPrice' | 'introMonths' | 'setupFee'>) {
@@ -94,6 +100,16 @@ export class Catalog {
         monthly: em.price, firstYear: em.price * 12, bindingMonths: 0, includes: sid ? [{ serviceId: sid, capacity: 1 }] : [],
         attributes: {}, verified: base.verifiedAt != null, extraFor: sid, providerId: base.providerId, logoId: sid,
       }
+    }
+    if (id.includes(CHOICE_SEP)) {
+      // A "choose N" product with the services the family picked: productId@netflix+tv2play
+      const [baseId, picked] = id.split(CHOICE_SEP)
+      const base = this.priced(baseId)
+      const ch = base?.attributes.choose
+      if (!base || !ch) return base
+      const selected = [...new Set(picked.split('+'))].filter((sid) => ch.from.includes(sid)).slice(0, ch.count)
+      const cap = (sid: string) => ch.capacity ?? (this.service.get(sid)?.capacityType === 'seats' ? 1 : 2)
+      return { ...base, id, includes: [...base.includes, ...selected.map((sid) => ({ serviceId: sid, capacity: cap(sid) }))], selected }
     }
     const p = this.product.get(id)
     if (!p) return null
@@ -241,6 +257,10 @@ export function evaluate(cat: Catalog, packages: BoardPackage[]): BoardResult {
     for (const it of items) {
       const ch = it.attributes.choose
       if (!ch) continue
+      if (it.selected) {
+        chosen.set(it.id, it.selected)
+        continue
+      }
       const demandOf = (sid: string) => users.filter((u) => answersOf(memberById.get(u)!).wants.includes(sid)).length
       const picks = ch.from
         .filter((sid) => demandOf(sid) > 0)

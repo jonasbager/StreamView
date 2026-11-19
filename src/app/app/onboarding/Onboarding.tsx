@@ -18,6 +18,16 @@ interface Props {
 
 const STEPS = ['Har i dag', 'Ønsker', 'Mobil & internet', 'Skifte?']
 
+const GROUPS: { category: string; label: string }[] = [
+  { category: 'video', label: 'Film & serier' },
+  { category: 'sport', label: 'Sport' },
+  { category: 'music', label: 'Musik' },
+  { category: 'audio', label: 'Lydbøger & podcasts' },
+  { category: 'free', label: 'Gratis' },
+]
+const grouped = <T extends { category: string }>(list: T[]) =>
+  GROUPS.map((g) => ({ ...g, items: list.filter((x) => x.category === g.category) })).filter((g) => g.items.length)
+
 const empty: Answers = {
   paysFor: [],
   wants: [],
@@ -106,7 +116,9 @@ export function Onboarding({ memberId, initialName, forSomeoneElse, initial, ser
             </label>
           )}
           <div className="mt-6 grid min-w-0 gap-2">
-            {paid.map((s) => {
+            {grouped(paid).map((g) => [
+              <div key={`h-${g.category}`} className="eyebrow mt-3 first:mt-0">{g.label}</div>,
+              ...g.items.map((s) => {
               const p = pays(s.id)
               return (
                 <div key={s.id} className={`min-w-0 rounded-2xl border bg-card transition ${p ? 'border-ink' : 'border-line hover:border-ink-3'}`}>
@@ -174,7 +186,8 @@ export function Onboarding({ memberId, initialName, forSomeoneElse, initial, ser
                   )}
                 </div>
               )
-            })}
+            }),
+            ])}
           </div>
         </section>
       )}
@@ -187,8 +200,11 @@ export function Onboarding({ memberId, initialName, forSomeoneElse, initial, ser
             <b className="font-medium text-ink"> Skal have</b> bliver aldrig valgt fra; <b className="font-medium text-ink">Gerne</b> kommer med, hvis
             der er råd.
           </p>
-          <ul className="mt-6 divide-y divide-line rounded-2xl border border-line bg-card">
-            {services.map((s) => (
+          {grouped(services).map((g) => (
+          <div key={g.category} className="mt-6">
+          <div className="eyebrow mb-2">{g.label}</div>
+          <ul className="divide-y divide-line rounded-2xl border border-line bg-card">
+            {g.items.map((s) => (
               <li key={s.id} className="flex flex-wrap items-center gap-3 px-3 py-2.5">
                 <BrandMark id={s.id} name={s.name} color={s.color} />
                 <span className="min-w-0 flex-1">
@@ -208,6 +224,8 @@ export function Onboarding({ memberId, initialName, forSomeoneElse, initial, ser
               </li>
             ))}
           </ul>
+          </div>
+          ))}
         </section>
       )}
 

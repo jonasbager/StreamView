@@ -37,7 +37,7 @@ export const SERVICES: S[] = [
     },
   },
   {
-    id: 'viaplay', name: 'Viaplay', category: 'sport', color: '#e0244f', capacityType: 'streams', url: 'https://viaplay.dk',
+    id: 'viaplay', name: 'Viaplay', category: 'video', color: '#e0244f', capacityType: 'streams', url: 'https://viaplay.dk',
     sharing: {
       householdOnly: true, enforcement: 'medium',
       howEnforced: 'Vilkårene begrænser kontoen til én husstand. Viaplay begrænser antal registrerede enheder og samtidige streams, især på sportspakkerne.',
@@ -120,6 +120,48 @@ export const SERVICES: S[] = [
       officialSharing: 'Family-plan til op til 6 personer med hvert sit login.',
     },
   },
+
+  // Audiobooks and podcasts. Each person has their own profile; family plans cover a set number of people.
+  {
+    id: 'storytel', name: 'Storytel', category: 'audio', color: '#ff5c28', capacityType: 'seats', url: 'https://www.storytel.com/dk',
+    sharing: {
+      householdOnly: true, enforcement: 'low',
+      howEnforced: 'Familieabonnementet er til husstanden, men Storytel tjekker ikke aktivt, hvor profilerne bruges. Lytning tæller per profil.',
+      officialSharing: 'Familie-abonnement med 2–4 profiler, hver med egen lytning.',
+    },
+  },
+  {
+    id: 'mofibo', name: 'Mofibo', category: 'audio', color: '#2c2a6b', capacityType: 'seats', url: 'https://mofibo.com/dk',
+    sharing: {
+      householdOnly: true, enforcement: 'low',
+      howEnforced: 'Ejes af Storytel og fungerer på samme måde: familieprofiler, ingen aktive husstandstjek.',
+      officialSharing: 'Familie-abonnement med flere profiler.',
+    },
+  },
+  {
+    id: 'bookbeat', name: 'BookBeat', category: 'audio', color: '#e8336b', capacityType: 'seats', url: 'https://www.bookbeat.com/dk',
+    sharing: {
+      householdOnly: true, enforcement: 'low',
+      howEnforced: 'Familiekonti er til husstanden. Ingen kendte aktive tjek; timer tæller per profil.',
+      officialSharing: 'Tilføj familieprofiler mod et tillæg pr. profil.',
+    },
+  },
+  {
+    id: 'nextory', name: 'Nextory', category: 'audio', color: '#1d1d1b', capacityType: 'seats', url: 'https://www.nextory.com/dk',
+    sharing: {
+      householdOnly: true, enforcement: 'low',
+      howEnforced: 'Familieprofiler; ingen kendte aktive tjek.',
+      officialSharing: 'Familie-abonnement med op til 4 profiler.',
+    },
+  },
+  {
+    id: 'podimo', name: 'Podimo', category: 'audio', color: '#f6a8c8', capacityType: 'seats', url: 'https://podimo.com/dk',
+    sharing: {
+      householdOnly: true, enforcement: 'low',
+      howEnforced: 'Personlig konto. Kontoen kan bruges på flere enheder, men Podimo begrænser samtidig afspilning.',
+      officialSharing: 'Ingen familieplan; hver person har sin egen konto.',
+    },
+  },
 ]
 
 const sp = (id: string, name: string, color: string, url: string): SeedProvider => ({
@@ -192,6 +234,19 @@ export const PRODUCTS: P[] = [
     includes: [{ serviceId: 'appletv', capacity: 6 }, { serviceId: 'applemusic', capacity: 6 }],
     offerText: 'Inkl. Arcade og 200 GB iCloud+. Familiedeling til 6 i alle hjem.',
   },
+
+  // Audiobooks & podcasts (approximate, confirmed by the weekly price job).
+  stream('storytel-basic', 'storytel', 'Basic (20 timer/md.)', 129, 1),
+  stream('storytel-unlimited', 'storytel', 'Unlimited', 199, 1),
+  stream('storytel-family-2', 'storytel', 'Familie 2 personer', 249, 2),
+  stream('storytel-family-4', 'storytel', 'Familie 4 personer', 299, 4),
+  stream('mofibo-unlimited', 'mofibo', 'Ubegrænset', 199, 1),
+  stream('mofibo-family', 'mofibo', 'Familie 2 personer', 249, 2),
+  stream('bookbeat-basic', 'bookbeat', 'Basic (20 timer/md.)', 99, 1),
+  stream('bookbeat-premium', 'bookbeat', 'Premium (ubegrænset)', 199, 1),
+  stream('nextory-silver', 'nextory', 'Silver (30 timer/md.)', 129, 1),
+  stream('nextory-family', 'nextory', 'Familie 2 personer', 239, 2),
+  stream('podimo-premium', 'podimo', 'Premium', 79, 1),
 
   // Mobile (one line each unless `lines` says otherwise).
   { id: 'telmore-mobil-50', providerId: 'telmore', name: 'Fri tale + 50 GB', category: 'mobile', price: 119, attributes: { dataGb: 50 } },

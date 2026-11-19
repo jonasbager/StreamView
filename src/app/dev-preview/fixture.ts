@@ -18,7 +18,7 @@ export async function fixtureCtx(): Promise<Ctx> {
     members: [
       m('anna', 'Anna', 'home', { wants: ['netflix', 'hbomax', 'spotify', 'tv2play', 'disney'], mustHave: ['netflix'], paysFor: [{ serviceId: 'netflix', monthly: 179, productId: 'netflix-premium', via: 'self' }, { serviceId: 'hbomax', monthly: null, via: 'mobile' }], mobile: { providerId: 'telia', monthly: 299 }, broadband: { providerId: 'yousee', monthly: 449 } }),
       m('peter', 'Peter', 'home', { wants: ['netflix', 'viaplay', 'viaplaysport', 'spotify'], paysFor: [{ serviceId: 'viaplay', monthly: 449 }], mobile: { providerId: 'telia', monthly: 299 }, dataNeed: 'high' }),
-      m('emma', 'Emma', 'home', { wants: ['disney', 'spotify', 'youtube'], student: true, mobile: { providerId: 'telmore', monthly: 129 } }),
+      m('emma', 'Emma', 'home', { wants: ['disney', 'spotify', 'youtube', 'storytel', 'podimo'], student: true, mobile: { providerId: 'telmore', monthly: 129 } }),
       m('mormor', 'Mormor', 'gran', { wants: ['tv2play', 'netflix', 'drtv', 'skyshowtime'], paysFor: [{ serviceId: 'tv2play', monthly: 149 }], tv: { providerId: 'yousee', monthly: 399 }, willingToSwitch: 'no' }),
     ],
   }

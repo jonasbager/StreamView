@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Answers, Member, Product } from '@/db/schema'
 import { PRODUCTS, PROVIDERS, SERVICES } from '@/db/seed-data'
-import { Catalog, currentSpend, evaluate, frontier, optimise, pickForBudget, suggest, todayBoard } from './engine'
+import { Catalog, currentSpend, evaluate, frontier, optimise, pickForBudget, suggest, todayBoard, withChoices } from './engine'
 
 const products: Product[] = PRODUCTS.map((p) => ({
   introPrice: null, introMonths: null, setupFee: 0, bindingMonths: 0, includes: [], attributes: {}, offerText: null,
@@ -151,5 +151,22 @@ describe('engine', () => {
     const best = suggest(cat, todayBoard(cat))[0]
     expect(best.board.flatMap((p) => p.productIds)).toEqual(['spotify-duo'])
     expect(best.saving).toBe(238 - 159)
+  })
+
+  it('uses the services the family picked in a choose-N package', () => {
+    const mix: Product = { ...products.find((p) => p.id === 'cbb-mobil-60')!, id: 'cbb-mix', name: 'CBB MIX 2', category: 'bundle', price: 160, attributes: { choose: { count: 2, from: ['netflix', 'tv2play', 'hbomax', 'viaplay'] } } }
+    const cat = new Catalog({
+      services, providers: PROVIDERS.map((p) => ({ ...p, lastCheckedAt: null })), products: [...products, mix], households,
+      members: [member('j', 'home', { wants: ['netflix', 'tv2play', 'hbomax'] })],
+    })
+    const auto = evaluate(cat, [{ id: '1', name: 'x', householdId: 'home', productIds: ['cbb-mix'], memberIds: ['j'] }])
+    expect(auto.missing).toHaveLength(1)
+    const picked = withChoices('cbb-mix', ['netflix', 'hbomax'])
+    expect(picked).toBe('cbb-mix@netflix+hbomax')
+    const r = evaluate(cat, [{ id: '1', name: 'x', householdId: 'home', productIds: [picked], memberIds: ['j'] }])
+    expect(r.packages[0].chosen[picked]).toEqual(['netflix', 'hbomax'])
+    expect(r.missing.map((m) => m.serviceId)).toEqual(['tv2play'])
+    expect(cat.priced(withChoices(picked, ['netflix', 'tv2play', 'viaplay']))!.selected).toEqual(['netflix', 'tv2play'])
+    expect(withChoices(picked, [])).toBe('cbb-mix')
   })
 })
