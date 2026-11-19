@@ -2,10 +2,10 @@ import 'server-only'
 import { generateText, Output } from 'ai'
 import { and, eq, inArray } from 'drizzle-orm'
 import { z } from 'zod'
+import { AI_MODEL, aiProviderOptions } from './ai'
 import { db, priceChanges, priceRuns, products, providers, services } from '@/db'
 import type { Product, ProposedProduct, Provider } from '@/db/schema'
 
-const MODEL = 'anthropic/claude-sonnet-5.5'
 const UA = 'Mozilla/5.0 (compatible; StreamViewPriceBot/1.0; +https://streamview.vercel.app)'
 const MAX_PAGES = 4
 const MAX_CHARS_PER_PAGE = 30_000
@@ -120,7 +120,8 @@ async function runProvider(provider: Provider, runId: string, serviceIds: string
   let urls = known
   if (!urls.length) {
     const { output } = await generateText({
-      model: MODEL,
+      model: AI_MODEL,
+      providerOptions: aiProviderOptions,
       output: Output.object({ schema: pickSchema }),
       prompt: `Du ser forsiden for ${provider.name} (${home.url}). Vælg op til ${MAX_PAGES - 1} links fra listen, der mest sandsynligt viser priser på ${
         provider.kind === 'streaming' ? 'abonnementer/planer' : 'mobilabonnementer, internet, tv-pakker og streamingpakker'
@@ -140,7 +141,8 @@ async function runProvider(provider: Provider, runId: string, serviceIds: string
   }
 
   const { output } = await generateText({
-    model: MODEL,
+    model: AI_MODEL,
+      providerOptions: aiProviderOptions,
     output: Output.object({ schema: extractSchema }),
     system: `Du udtrækker aktuelle danske priser fra udbyderes hjemmesider til en prissammenligning.
 Medtag kun produkter, hvor prisen står på siden. Gæt aldrig en pris. Priser i kr. pr. måned inkl. moms.

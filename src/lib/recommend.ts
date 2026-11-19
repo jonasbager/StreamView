@@ -1,14 +1,24 @@
 import 'server-only'
 import { generateText, Output } from 'ai'
 import { z } from 'zod'
+import { AI_MODEL, aiProviderOptions } from './ai'
 import type { BoardPackage, Recommendation, RecommendedSetup } from '@/db/schema'
 import { answersOf, Catalog, EXTRA_SUFFIX, evaluate, KEEP_PREFIX, optimise, type Ctx } from './engine'
 import { ENFORCEMENT_DA } from './format'
 
-export const MODEL = 'anthropic/claude-sonnet-5.5'
 
 const setupSchema = z.object({
   intro: z.string().describe('2–3 sætninger på dansk til familien om det vigtigste.'),
+  explained: z
+    .array(
+      z.object({
+        index: z.number().int().describe('Index i computedSuggestions'),
+        title: z.string().describe('Kort titel for hele opsætningen'),
+        summary: z.string().describe('Én sætning på dansk.'),
+        reasoning: z.array(z.string()).describe('2–5 korte punkter: hvad ændrer sig, og hvad familien konkret skal gøre (opsige, skifte, oprette).'),
+      }),
+    )
+    .describe('Forklaring til hvert af de beregnede forslag.'),
   setups: z
     .array(
       z.object({
@@ -26,8 +36,8 @@ const setupSchema = z.object({
         ),
       }),
     )
-    .min(1)
-    .max(3),
+    .max(2)
+    .describe('Kun alternative opsætninger, der er billigere end de beregnede eller dækker mere. Ellers en tom liste.'),
 })
 
 function describeFamily(ctx: Ctx, cat: Catalog) {
@@ -133,27 +143,45 @@ export async function recommend(ctx: Ctx): Promise<Recommendation> {
   const baseEval = base.setups.map((s) => evaluate(cat, withIds(s.packages)))
 
   try {
-    const { output } = await generateText({
-      model: MODEL,
+    const { output, response } = await generateText({
+      model: AI_MODEL,
+      providerOptions: aiProviderOptions,
       output: Output.object({ schema: setupSchema }),
       system: `Du er en dansk rådgiver, der hjælper familier med at betale mindst muligt for streaming, mobil, internet og TV.
 Skriv kort, venligt og konkret på dansk. Ingen emojis, ingen overdrivelser.
 Du får familiens svar, katalogets produkter (med id), tjenesternes delingsregler og to beregnede forslag.
-Lav 1–3 opsætninger. Den første SKAL være kind "legal" og må kun dele en tjeneste på tværs af hjem, hvis oneHouseholdOnly er false eller via et officielt ekstra medlem (extraMemberId).
-Hvis det kan betale sig, så lav også én "bend", der deler på tværs af hjem, og nævn ærligt risikoen.
+Forklar hvert beregnet forslag i "explained": hvad ændrer sig for hvem, og hvad de konkret skal gøre.
+Er et forslag af kind "bend", så nævn ærligt hvilke tjenester der deles på tværs af hjem og hvor hårdt de håndhæver det.
+I "setups" må du kun foreslå alternativer, der er billigere eller dækker mere end de beregnede. "legal" må kun dele en tjeneste på tværs af hjem, hvis oneHouseholdOnly er false eller via et officielt ekstra medlem (extraMemberId).
 Brug KUN produkt-id'er fra kataloget eller familiens keepIds. Respektér willingToSwitch "no" ved at bruge personens keepIds.
 Hver person med mobil skal have et mobilabonnement, og hvert hjem med internet skal have internet.
 Tjek om pakker (bundles), familieplaner, studierabat eller at droppe en tjeneste, ingen har bedt om, kan gøre det billigere.
-Priserne regnes efter af systemet, så skriv ikke beløb i dine punkter, men beskriv hvad der gør det billigt.`,
+Priserne regnes efter af systemet, så skriv ikke beløb i dine punkter, men beskriv hvad der gør det billigt.
+I al tekst: brug produkternes navne (fx "Netflix Standard med reklamer"), aldrig id'er eller tekniske feltnavne som willingToSwitch, oneHouseholdOnly eller keepIds.
+Titlen beskriver hele opsætningen, fx "Billigst efter reglerne" eller "Del TV 2 Play med mormor".`,
       prompt: JSON.stringify({
         family: describeFamily(ctx, cat),
         households: ctx.households.map((h) => ({ id: h.id, name: h.name })),
         sharingRules: ruleSummary(ctx),
         catalog: describeCatalog(ctx, cat),
-        computedSuggestions: base.setups.map((s, i) => ({ title: s.title, kind: s.kind, monthly: baseEval[i].monthly, packages: s.packages })),
+        computedSuggestions: base.setups.map((s, i) => ({
+          index: i,
+          kind: s.kind,
+          monthly: baseEval[i].monthly,
+          savingVsToday: baseEval[i].saving,
+          packages: s.packages.map((p) => ({
+            ...p,
+            products: p.productIds.map((id) => {
+              const x = cat.priced(id)
+              return x ? `${x.providerName} ${x.name}` : id
+            }),
+          })),
+        })),
       }),
     })
 
+    const gaps = (r: ReturnType<typeof evaluate>) => r.missing.length + r.missingTelco.length
+    const computed = { legal: baseEval[0], bend: baseEval[1] ?? baseEval[0] }
     const setups: RecommendedSetup[] = []
     for (const s of output.setups) {
       const pkgs = clean(ctx, cat, s.packages)
@@ -161,15 +189,20 @@ Priserne regnes efter af systemet, så skriv ikke beløb i dine punkter, men bes
       const r = evaluate(cat, withIds(pkgs))
       // Never label something "legal" that breaks rules.
       const kind = s.kind === 'legal' && r.maxRisk !== 'none' ? 'bend' : s.kind
+      // Quality gate: must cover at least as much as our computed setup, and not cost more.
+      const ref = computed[kind]
+      if (gaps(r) > gaps(ref) || r.monthly > ref.monthly + 1) continue
       setups.push({ id: crypto.randomUUID(), title: s.title, kind, summary: s.summary, reasoning: s.reasoning, packages: pkgs })
     }
-    // Keep the computed optimum if the model's best legal setup is more expensive or misses things.
-    const bestLegal = setups.filter((s) => s.kind === 'legal').map((s) => evaluate(cat, withIds(s.packages)))
-    const computedLegal = baseEval[0]
-    if (!bestLegal.length || bestLegal.every((r) => r.monthly > computedLegal.monthly + 1 || r.missing.length > computedLegal.missing.length)) {
-      setups.unshift(base.setups[0])
-    }
-    return { createdAt: new Date().toISOString(), intro: output.intro, setups: setups.slice(0, 4) }
+    console.info(`recommend: ${response.modelId}, kept ${setups.length}/${output.setups.length} alternatives`)
+    // The computed setups always come first, with the model's explanation when it gave one.
+    const explainedComputed = base.setups.map((b, i) => {
+      const e = output.explained.find((x) => x.index === i)
+      return e ? { ...b, title: e.title, summary: e.summary, reasoning: e.reasoning } : b
+    })
+    const aiKept = output.explained.length > 0 || setups.length > 0
+    setups.unshift(...explainedComputed)
+    return { createdAt: new Date().toISOString(), intro: aiKept ? output.intro : base.intro, setups: setups.slice(0, 4) }
   } catch (e) {
     console.error('AI recommendation failed, using computed setups', e)
     return base
