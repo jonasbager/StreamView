@@ -96,7 +96,8 @@ export class Catalog {
       name: p.name,
       providerName: this.provider.get(p.providerId)?.name ?? p.providerId,
       category: p.category,
-      monthly: p.introPrice != null && (p.introMonths ?? 0) > 0 ? p.introPrice : p.price,
+      // Always the normal price; intro offers and free trials only count in firstYear.
+      monthly: p.price,
       firstYear: firstYear(p),
       bindingMonths: p.bindingMonths,
       includes: p.includes,
@@ -485,7 +486,7 @@ export function optimise(cat: Catalog, mode: 'legal' | 'bend', tolerance: Enforc
   applyExtraMembers(cat, packages)
 
   // Merge streaming packages per home into one tidy package each (pooled ones stay separate).
-  const merged = mergeByHome(packages, (hid) => `Streaming · ${name(hid)}`)
+  const merged = mergeByHome(cat, packages, (hid, shared) => (shared ? `Delt med andre hjem · betales af ${name(hid)}` : `Streaming · ${name(hid)}`))
 
   // Keepers
   for (const [mid, ids] of keepers) {
@@ -552,21 +553,28 @@ function applyExtraMembers(cat: Catalog, packages: BoardPackage[]) {
   }
 }
 
-function mergeByHome(packages: BoardPackage[], label: (hid: string) => string): BoardPackage[] {
+function mergeByHome(cat: Catalog, packages: BoardPackage[], label: (hid: string, shared: boolean) => string): BoardPackage[] {
+  const homeOf = new Map(cat.ctx.members.map((m) => [m.id, m.householdId]))
   const out: BoardPackage[] = []
-  const byHome = new Map<string, BoardPackage>()
+  const groups = new Map<string, BoardPackage>()
   for (const p of packages) {
-    if (p.name.startsWith('Streaming ·') || p.name.startsWith('Delt')) {
-      const existing = byHome.get(p.householdId)
-      if (existing) {
-        existing.productIds.push(...p.productIds)
-        existing.memberIds = [...new Set([...existing.memberIds, ...p.memberIds])]
-        continue
-      }
-      const copy = { ...p, name: label(p.householdId), productIds: [...p.productIds], memberIds: [...p.memberIds] }
-      byHome.set(p.householdId, copy)
-      out.push(copy)
-    } else out.push(p)
+    if (!(p.name.startsWith('Streaming ·') || p.name.startsWith('Delt'))) {
+      out.push(p)
+      continue
+    }
+    // Keep a home's own subscriptions apart from those shared with other homes, so
+    // people from another home never appear on services they don't share.
+    const shared = p.memberIds.some((m) => homeOf.get(m) !== p.householdId)
+    const key = `${p.householdId}:${shared}`
+    const existing = groups.get(key)
+    if (existing) {
+      existing.productIds.push(...p.productIds)
+      existing.memberIds = [...new Set([...existing.memberIds, ...p.memberIds])]
+      continue
+    }
+    const copy = { ...p, name: label(p.householdId, shared), productIds: [...p.productIds], memberIds: [...p.memberIds] }
+    groups.set(key, copy)
+    out.push(copy)
   }
   return out
 }

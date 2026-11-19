@@ -69,6 +69,23 @@ describe('engine', () => {
     expect(r.packages.every((p) => p.riskyServices.length === 0)).toBe(true)
   })
 
+  it('does not flag a home member as sharing a service they have at home', () => {
+    const cat = make([
+      member('a', 'home', { wants: ['netflix', 'tv2play'] }),
+      member('g', 'gran', { wants: ['netflix', 'tv2play'] }),
+    ])
+    const r = evaluate(cat, optimise(cat, 'bend', 'high'))
+    expect(r.maxRisk).toBe('low')
+    expect(r.packages.flatMap((p) => p.riskyServices)).toEqual(['tv2play'])
+  })
+
+  it('prices free trials at the normal monthly price', () => {
+    const trial = { ...products.find((p) => p.id === 'appletv-std')!, introPrice: 0, introMonths: 1 }
+    const cat = new Catalog({ services, providers: PROVIDERS.map((p) => ({ ...p, lastCheckedAt: null })), products: [trial], households, members: [] })
+    expect(cat.priced('appletv-std')!.monthly).toBe(trial.price)
+    expect(cat.priced('appletv-std')!.firstYear).toBe(trial.price * 11)
+  })
+
   it('flags a manually shared Netflix as strict risk', () => {
     const cat = make(members)
     const r = evaluate(cat, [{ id: '1', name: 'x', householdId: 'home', productIds: ['netflix-standard'], memberIds: ['anna', 'mormor'] }])
