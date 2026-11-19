@@ -7,6 +7,7 @@ import type { Product, Provider, Service } from './schema'
  */
 
 type S = Omit<Service, 'sort'>
+type SeedProvider = Omit<Provider, 'lastCheckedAt'>
 type P = Omit<Product, 'updatedAt' | 'verifiedAt' | 'active' | 'offerEndsAt' | 'sourceUrl' | 'offerText' | 'introPrice' | 'introMonths' | 'setupFee' | 'bindingMonths' | 'attributes' | 'includes'> &
   Partial<Pick<Product, 'introPrice' | 'introMonths' | 'setupFee' | 'bindingMonths' | 'attributes' | 'includes' | 'offerText'>>
 
@@ -121,14 +122,14 @@ export const SERVICES: S[] = [
   },
 ]
 
-const sp = (id: string, name: string, color: string, url: string): Provider => ({
+const sp = (id: string, name: string, color: string, url: string): SeedProvider => ({
   id, name, kind: 'streaming', color, url, priceUrls: [url], offers: [],
 })
-const tp = (id: string, name: string, color: string, url: string, offers: Provider['offers']): Provider => ({
+const tp = (id: string, name: string, color: string, url: string, offers: Provider['offers']): SeedProvider => ({
   id, name, kind: 'telco', color, url, priceUrls: [url], offers,
 })
 
-export const PROVIDERS: Provider[] = [
+export const PROVIDERS: SeedProvider[] = [
   ...SERVICES.filter((s) => !['viaplaysport', 'tv2sport'].includes(s.id)).map((s) => sp(s.id, s.name, s.color, s.url)),
   { ...sp('apple', 'Apple', '#5f5f64', 'https://www.apple.com/dk/apple-one/'), priceUrls: ['https://www.apple.com/dk/apple-one/'] },
   tp('yousee', 'YouSee', '#00a3a0', 'https://yousee.dk', ['mobile', 'broadband', 'tv']),

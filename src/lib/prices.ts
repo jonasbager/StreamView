@@ -202,27 +202,62 @@ Streamingtjenesternes id'er: ${serviceIds.join(', ')}.`,
   return `${found.length} fundet, ${verified} bekræftet uændret, ${changes} ændringer til godkendelse`
 }
 
+const RECHECK_AFTER_MS = 6 * 24 * 60 * 60 * 1000
+/** Stop starting new providers after this, so a run never hits the 300 s function limit. */
+const TIME_BUDGET_MS = 220_000
+const CONCURRENCY = 2
+
+const isRateLimit = (e: unknown) => /rate limit/i.test(e instanceof Error ? `${e.name} ${e.message}` : String(e))
+
+/**
+ * Checks providers that haven't been checked for 6 days (or the given ones), oldest first,
+ * within a time budget. The cron runs daily, so every provider is refreshed about weekly
+ * and a single run never has to do everything.
+ */
 export async function runPriceJob(trigger: 'cron' | 'manual', providerIds?: string[]) {
+  const started = Date.now()
   const runId = crypto.randomUUID()
   await db.insert(priceRuns).values({ id: runId, trigger })
-  const list = providerIds?.length
+  const all = providerIds?.length
     ? await db.select().from(providers).where(inArray(providers.id, providerIds))
     : await db.select().from(providers)
+  const due = providerIds?.length
+    ? all
+    : all
+        .filter((p) => !p.lastCheckedAt || started - new Date(p.lastCheckedAt).getTime() > RECHECK_AFTER_MS || trigger === 'manual')
+        .sort((a, b) => (a.lastCheckedAt ?? '').localeCompare(b.lastCheckedAt ?? ''))
   const serviceIds = (await db.select({ id: services.id }).from(services)).map((s) => s.id)
 
   const log: { providerId: string; ok: boolean; message: string }[] = []
-  const queue = [...list]
+  const queue = [...due]
   await Promise.all(
-    Array.from({ length: 4 }, async () => {
+    Array.from({ length: CONCURRENCY }, async () => {
       for (let p = queue.shift(); p; p = queue.shift()) {
+        if (Date.now() - started > TIME_BUDGET_MS) {
+          queue.unshift(p)
+          return
+        }
         try {
-          log.push({ providerId: p.id, ok: true, message: await runProvider(p, runId, serviceIds) })
+          let message: string
+          try {
+            message = await runProvider(p, runId, serviceIds)
+          } catch (e) {
+            if (!isRateLimit(e) || Date.now() - started > TIME_BUDGET_MS - 60_000) throw e
+            await new Promise((r) => setTimeout(r, 20_000))
+            message = await runProvider(p, runId, serviceIds)
+          }
+          log.push({ providerId: p.id, ok: true, message })
+          await db.update(providers).set({ lastCheckedAt: new Date().toISOString() }).where(eq(providers.id, p.id))
         } catch (e) {
-          log.push({ providerId: p.id, ok: false, message: e instanceof Error ? e.message : String(e) })
+          const message = e instanceof Error ? e.message.slice(0, 300) : String(e)
+          log.push({ providerId: p.id, ok: false, message })
+          // A rate limit is our problem, not the site's: leave it due so the next run retries it.
+          if (!isRateLimit(e)) await db.update(providers).set({ lastCheckedAt: new Date().toISOString() }).where(eq(providers.id, p.id))
         }
       }
     }),
   )
+  for (const p of queue) log.push({ providerId: p.id, ok: true, message: 'Udskudt til næste kørsel (tidsgrænse)' })
   await db.update(priceRuns).set({ finishedAt: new Date().toISOString(), log }).where(eq(priceRuns.id, runId))
   return { runId, log }
 }

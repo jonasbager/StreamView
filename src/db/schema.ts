@@ -37,6 +37,8 @@ export const providers = pgTable('providers', {
   priceUrls: jsonb('price_urls').$type<string[]>().notNull().default([]),
   /** What this provider offers, for the onboarding questions. */
   offers: jsonb('offers').$type<Array<'mobile' | 'broadband' | 'tv'>>().notNull().default([]),
+  /** Last time the price job looked at this provider (successfully or not). */
+  lastCheckedAt: timestamp('last_checked_at', { mode: 'string' }),
 })
 
 export interface ProductInclude {

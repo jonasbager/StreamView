@@ -20,7 +20,7 @@ const households = [
   { id: 'home', familyId: 'f', name: 'Hjem' },
   { id: 'gran', familyId: 'f', name: 'Bedsteforældre' },
 ]
-const make = (members: Member[]) => new Catalog({ services, providers: PROVIDERS, products, households, members })
+const make = (members: Member[]) => new Catalog({ services, providers: PROVIDERS.map((p) => ({ ...p, lastCheckedAt: null })), products, households, members })
 
 describe('engine', () => {
   const members = [
