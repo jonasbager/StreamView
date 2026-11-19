@@ -45,6 +45,8 @@ export interface Priced {
   /** An official extra-member slot for this service (allows one person outside the home). */
   extraFor?: string
   offerText?: string | null
+  /** Details for the "what's included" fold-out. */
+  info?: { price: number; introPrice: number | null; introMonths: number | null; setupFee: number; sourceUrl: string | null; verifiedAt: string | null; offerEndsAt: string | null }
 }
 
 export type KeepKind = 'mobile' | 'broadband' | 'tv' | 'streaming'
@@ -110,6 +112,7 @@ export class Catalog {
       attributes: p.attributes,
       verified: p.verifiedAt != null,
       offerText: p.offerText,
+      info: { price: p.price, introPrice: p.introPrice, introMonths: p.introMonths, setupFee: p.setupFee, sourceUrl: p.sourceUrl, verifiedAt: p.verifiedAt, offerEndsAt: p.offerEndsAt },
     }
   }
 

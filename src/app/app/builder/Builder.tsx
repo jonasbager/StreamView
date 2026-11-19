@@ -15,6 +15,7 @@ import {
 } from '@dnd-kit/core'
 import { useEffect, useMemo, useRef, useState, useTransition } from 'react'
 import { BrandMark } from '@/components/BrandMark'
+import { ProductDetails } from '@/components/ProductDetails'
 import { Person, personColor, RiskPill } from '@/components/ui'
 import type { BoardPackage, FamilySettings, ProductCategory } from '@/db/schema'
 import { answersOf, Catalog, EXTRA_SUFFIX, evaluate, KEEP_PREFIX, optimise, suggest, suggestionMeta, type Ctx, type Priced, type Suggestion } from '@/lib/engine'
@@ -445,47 +446,66 @@ function serviceColor(it: Priced, cat: Catalog) {
   return (sid && cat.service.get(sid)?.color) || cat.ctx.providers.find((p) => p.name === it.providerName)?.color || '#5d5a54'
 }
 
-function ProductRow({ item, cat, lifted, onAdd, onRemove, who }: { item: Priced; cat: Catalog; lifted?: boolean; onAdd?: () => void; onRemove?: () => void; who?: { text: string; warn?: boolean } }) {
+function ProductRow({ item, cat, lifted, onAdd, onRemove, who, usedFor }: { item: Priced; cat: Catalog; lifted?: boolean; onAdd?: () => void; onRemove?: () => void; who?: { text: string; warn?: boolean }; usedFor?: string[] }) {
+  const [open, setOpen] = useState(false)
+  const title = item.name.toLowerCase().startsWith(item.providerName.toLowerCase()) ? item.name : `${item.providerName} ${item.name}`
+  const includesText = item.attributes.choose
+    ? `Vælg ${item.attributes.choose.count} tjenester${usedFor?.length ? `: ${usedFor.map((s) => cat.service.get(s)?.name).join(', ')}` : ''}`
+    : item.includes.length > 1
+      ? `Med ${item.includes.map((i) => cat.service.get(i.serviceId)?.name).filter(Boolean).join(', ')}`
+      : ''
   return (
-    <div
-      className={`group flex items-center gap-3 rounded-xl border bg-card px-3 py-2.5 ${lifted ? 'rotate-[0.6deg] border-ink shadow-xl' : 'border-line hover:border-line-2'}`}
-    >
-      <BrandMark id={item.logoId} name={item.providerName} color={serviceColor(item, cat)} size={30} />
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-[15px] font-medium">{item.name.toLowerCase().startsWith(item.providerName.toLowerCase()) ? item.name : `${item.providerName} ${item.name}`}</div>
-        <div className="truncate text-xs text-ink-3">
-          {CATEGORY_DA[item.category]}
-          {item.keep ? ' · nuværende' : ''}
-          {item.attributes.ads ? ' · reklamer' : ''}
-          {item.bindingMonths ? ` · ${item.bindingMonths} mdr. binding` : ''}
-          {item.extraFor ? ' · 1 person uden for hjemmet' : ''}
-          {!item.verified && ' · pris ikke bekræftet'}
+    <div className={`group rounded-xl border bg-card px-3 py-2.5 ${lifted ? 'rotate-[0.6deg] border-ink shadow-xl' : 'border-line hover:border-line-2'}`}>
+      <div className="flex items-center gap-3">
+        <BrandMark id={item.logoId} name={item.providerName} color={serviceColor(item, cat)} size={30} />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[15px] font-medium" title={title}>{title}</div>
+          <div className="truncate text-xs text-ink-3">
+            {CATEGORY_DA[item.category]}
+            {item.keep ? ' · nuværende' : ''}
+            {item.attributes.ads ? ' · reklamer' : ''}
+            {item.bindingMonths ? ` · ${item.bindingMonths} mdr. binding` : ''}
+            {item.extraFor ? ' · 1 person uden for hjemmet' : ''}
+            {!item.verified && ' · pris ikke bekræftet'}
+          </div>
+          {includesText && <div className="truncate text-xs text-ink-2">{includesText}</div>}
+          {who && <div className={`truncate text-xs ${who.warn ? 'text-warn' : 'text-ink-2'}`}>{who.text}</div>}
         </div>
-        {who && <div className={`truncate text-xs ${who.warn ? 'text-warn' : 'text-ink-2'}`}>{who.text}</div>}
+        <div className="num text-[15px] font-medium">{kr(item.monthly)}</div>
+        {onAdd && (
+          <button onClick={onAdd} className="grid size-7 place-items-center rounded-full text-ink-3 hover:bg-sunk hover:text-ink" aria-label="Tilføj til valgt pakke" title="Tilføj til valgt pakke">
+            +
+          </button>
+        )}
+        {onRemove && (
+          <button onClick={onRemove} className="grid size-7 place-items-center rounded-full text-ink-3 opacity-0 group-hover:opacity-100 hover:bg-sunk hover:text-ink focus:opacity-100" aria-label="Fjern">
+            ×
+          </button>
+        )}
       </div>
-      <div className="num text-[15px] font-medium">{kr(item.monthly)}</div>
-      {onAdd && (
-        <button onClick={onAdd} className="grid size-7 place-items-center rounded-full text-ink-3 hover:bg-sunk hover:text-ink" aria-label="Tilføj til valgt pakke" title="Tilføj til valgt pakke">
-          +
+      {!lifted && (
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          className="mt-1 text-xs text-ink-3 underline-offset-2 hover:text-ink hover:underline"
+        >
+          {open ? 'Skjul' : 'Hvad er med?'}
         </button>
       )}
-      {onRemove && (
-        <button onClick={onRemove} className="grid size-7 place-items-center rounded-full text-ink-3 opacity-0 group-hover:opacity-100 hover:bg-sunk hover:text-ink focus:opacity-100" aria-label="Fjern">
-          ×
-        </button>
-      )}
+      {open && <ProductDetails item={item} cat={cat} usedFor={usedFor} />}
     </div>
   )
 }
 
-function DraggableProduct({ uid, item, cat, onAdd, from, onRemove, who }: { uid: string; item: Priced; cat: Catalog; onAdd?: () => void; from?: string; onRemove?: () => void; who?: { text: string; warn?: boolean } }) {
+function DraggableProduct({ uid, item, cat, onAdd, from, onRemove, who, usedFor }: { uid: string; item: Priced; cat: Catalog; onAdd?: () => void; from?: string; onRemove?: () => void; who?: { text: string; warn?: boolean }; usedFor?: string[] }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `product:${from ?? 'catalog'}:${uid}`,
     data: { type: 'product', id: item.id, from } satisfies Drag,
   })
   return (
     <div ref={setNodeRef} {...listeners} {...attributes} className={`touch-manipulation cursor-grab active:cursor-grabbing ${isDragging ? 'opacity-30' : ''}`}>
-      <ProductRow item={item} cat={cat} onAdd={onAdd} onRemove={onRemove} who={who} />
+      <ProductRow item={item} cat={cat} onAdd={onAdd} onRemove={onRemove} who={who} usedFor={usedFor} />
     </div>
   )
 }
@@ -597,6 +617,7 @@ function PackageCard({
               key={key}
               uid={key}
               who={whoFor(item, pkg, ctx)}
+              usedFor={result?.chosen[id]}
               item={item}
               cat={cat}
               from={pkg.id}

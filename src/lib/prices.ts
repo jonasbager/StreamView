@@ -173,8 +173,10 @@ Streamingtjenesternes id'er: ${serviceIds.join(', ')}.`,
   for (const f of found) {
     const proposed = toProposed(f, capacityDefault)
     if (provider.kind === 'streaming' && !proposed.includes.length) proposed.includes = [{ serviceId: provider.id, capacity: f.streams ?? capacityDefault }]
+    // Fuzzy matches must agree on whether the product has chosen services ("+3 valgfri" is not the plain plan).
+    const sameKind = (e: Product) => !!e.attributes.choose === !!proposed.attributes.choose && (e.attributes.choose?.count ?? 0) === (proposed.attributes.choose?.count ?? 0)
     const match = existing.find((e) => !matched.has(e.id) && e.category === proposed.category && norm(e.name) === norm(proposed.name))
-      ?? existing.find((e) => !matched.has(e.id) && e.category === proposed.category && (norm(e.name).includes(norm(proposed.name)) || norm(proposed.name).includes(norm(e.name))))
+      ?? existing.find((e) => !matched.has(e.id) && e.category === proposed.category && sameKind(e) && (norm(e.name).includes(norm(proposed.name)) || norm(proposed.name).includes(norm(e.name))))
     if (match) {
       matched.add(match.id)
       const d = diff(match, proposed)
